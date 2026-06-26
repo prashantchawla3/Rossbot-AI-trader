@@ -2,6 +2,101 @@
 
 All notable changes per CLAUDE.md §11.4. Format: reverse-chronological, one entry per phase/change.
 
+## [Phase 6] Live Trading — 2026-06-26
+
+Hardened live broker path. Real money gate: U6 + readiness checklist + client sign-off. Staged
+capital ramp (MICRO → STARTER → FULL). Reconciliation every 30 s. Idempotent orders.
+Disconnect → flatten-or-freeze. Mental-stop monitor fires marketable-limit (never native STOP, U13).
+
+### Added (Python — live trading layer)
+
+- **`adapters/alpaca_broker.py`** — `AlpacaBrokerAdapter` implementing `BrokerAdapter` ABC.
+  All Alpaca SDK imports lazy (optional vendor dep). `submit_marketable_limit`: limit @ ask+offset,
+  TIF=IOC for RTH / TIF=DAY+extended_hours=True for PREMARKET/AFTERHOURS. Idempotent on 422 duplicate
+  `client_order_id` (fetches existing order via `get_order_by_id` instead of double-fill). `partial_sell`:
+  limit @ bid (U13 mental-stop exit). `cancel_all_flatten`: Alpaca `close_all_positions(cancel_orders=True)`
+  (market order — emergency kill-switch exception to U7). `get_halt_status`: via `get_asset()` — NOTE:
+  not intraday-accurate; Databento halt feed required for LULD detection (Phase 8). `get_broker_positions()`:
+  `{symbol: qty}` dict for reconciliation. Fail-closed on all errors.
+
+- **`core/config.py`** — +10 Phase 6 config keys (all in `DEFAULTS`): `LIVE_POLL_MS` (100 ms),
+  `RECONCILE_INTERVAL_S` (30 s), `RECONNECT_MAX_ATTEMPTS` (3), `RECONNECT_DELAY_S` (5 s),
+  `CAPITAL_RAMP_TIER` ("MICRO"), `CAPITAL_RAMP_MICRO_SHARES` (100), `CAPITAL_RAMP_STARTER_SHARES`
+  (2000), `READINESS_MIN_BUYING_POWER` ($5,000), `READINESS_MIN_EQUITY` ($25,000), `CLOCK_DRIFT_MAX_MS`
+  (500 ms).
+
+- **`core/live/__init__.py`** — Package marker; re-exports `CapitalRamp`, `CapitalTier`, `LiveSession`,
+  `ReadinessChecker`, `ReadinessItem`, `ReadinessResult`, `ReconcileResult`, `reconcile_positions`.
+
+- **`core/live/models.py`** — Frozen dataclasses: `CapitalTier` (MICRO/STARTER/FULL StrEnum),
+  `ReadinessItem` (name, passed, detail), `ReadinessResult` (items tuple, `all_passed` computed,
+  `failed_names()`, `summary()`), `ReconcileResult` (matched, broker_only, internal_only, qty_mismatch
+  as frozensets; `clean` property; `summary()`).
+
+- **`core/live/reconcile.py`** — Pure function `reconcile_positions(broker: dict[str, int],
+  internal: dict[str, int]) → ReconcileResult`. No side effects. Four categories: matched (symbol+qty
+  agree), broker_only (ghost — alert), internal_only (orphan — auto-clear), qty_mismatch.
+
+- **`core/live/capital_ramp.py`** — `CapitalRamp` class. Reads `CAPITAL_RAMP_TIER` at init
+  (fail-safe to MICRO on unknown value). `apply(approved_shares)` clamps by tier max. `max_for_tier()`
+  returns None for FULL (no cap). Config is read once at startup; never modified mid-session (U11).
+
+- **`core/live/readiness.py`** — `ReadinessChecker.check_all()` runs 8 independent checks (no
+  fail-fast — always returns full picture). Checks: (1) LIVE_ENABLED, (2) U6_GATE via SimulatorGate,
+  (3) ACCOUNT_TYPE not UNKNOWN, (4) BUYING_POWER ≥ READINESS_MIN_BUYING_POWER, (5) PDT_EQUITY advisory
+  (warns if margin <$25k, never blocks), (6) CAPITAL_TIER valid CapitalTier value, (7) CLOCK_DRIFT via
+  ntplib (asyncio.to_thread), (8) DATA_FEED SPY quote probe within 10 s timeout.
+
+- **`core/live/session.py`** — `LiveSession` — hardened PaperSession for real capital.
+  `run()`: U6 hard gate + LIVE_ENABLED check before spawning any tasks; raises RuntimeError if not
+  satisfied. Five concurrent async tasks: `_bar_loop` (strategy signals), `_mental_stop_loop`
+  (100 ms poll, fires `partial_sell` on breach — U13), `_eod_flatten_loop` (10 s poll, flattens at
+  EOD — U3), `_reconcile_loop` (30 s interval, removes orphans, logs ghosts + qty mismatches),
+  `_feed_watchdog_loop` (sets `_frozen=True` on staleness, calls `_handle_disconnect`).
+  `_handle_entry()`: risk.evaluate() → CapitalRamp.apply() → submit_marketable_limit.
+  `_handle_disconnect()`: retries cancel_all_flatten up to max_attempts; if broker reachable, clears
+  `_open`; if unreachable, stays frozen with CRITICAL log.
+
+- **`RUNBOOK.md`** — Live trading runbook and incident playbook: pre-market readiness procedure
+  (8-check table), capital ramp promotion guide, daily session procedure (07:00–EOD), order routing
+  rules table, 7-scenario incident playbook (readiness fail, reconcile discrepancy, feed staleness,
+  daily halt, kill-switch, duplicate fill, overnight hold), config key reference, monitoring endpoint
+  guide, client sign-off template, open items gating real capital.
+
+### Added (Python — tests, 63 new)
+
+- **`tests/test_reconcile.py`** — 11 tests: all-matched, broker-only, internal-only, qty-mismatch,
+  mixed discrepancy classes, empty-both, broker-empty, internal-empty, summary strings.
+
+- **`tests/test_capital_ramp.py`** — 13 tests: tier property, MICRO/STARTER/FULL apply() caps,
+  no-inflate below cap, zero passthrough, max_for_tier (None for FULL), apply() never exceeds approved.
+
+- **`tests/test_readiness.py`** — 12 tests: all-pass happy path, each of the 8 checks failing
+  independently, no-fail-fast (all 8 always run regardless of failures), ReadinessResult model.
+
+- **`tests/test_live_adapter.py`** — 19 tests: AlpacaBrokerAdapter with mocked SDK;
+  submit_marketable_limit (RTH IOC / pre-market DAY+extended); idempotency on 422 duplicate → fetch
+  existing order; partial_sell limit @ bid; cancel_all_flatten calls close_all_positions; account state;
+  get_broker_positions; halt status; fail-closed on errors.
+
+- **`tests/test_live_session.py`** — 8 tests: U6 gate blocks run(), LIVE_ENABLED=false blocks,
+  clean startup/stop, mental-stop fires partial_sell (not native STOP), reconcile removes orphan,
+  disconnect+reachable → cancel_all_flatten called + _open cleared, disconnect+unreachable → _open
+  preserved + stays frozen, EOD flatten clears _open.
+
+### Broker / vendor decisions recorded
+
+- **Primary broker:** Alpaca (alpaca-py 0.43.4). Paper sandbox + production share same SDK.
+  No local Gateway process required (unlike IBKR). Production keys not yet issued.
+- **Data:** Alpaca Algo Trader Plus subscription required (SIP). IEX-only (Basic plan) insufficient
+  for live scanning (`REQUIRE_SIP=true`).
+- **Halt detection gap:** `get_halt_status` via `get_asset()` does NOT detect intraday LULD halts.
+  Databento/Polygon halt feed required — flagged as Phase 8 dependency.
+- **IBKR (ib_async) evaluated but not selected:** Gateway-based, requires local process; more complex
+  auth. Alpaca preferred for initial live. IB adapter can be added later via `BrokerAdapter` ABC.
+
+---
+
 ## [Phase 5] Dashboard & Monitoring — 2026-06-26
 
 Live read-only dashboard, FastAPI WebSocket push, kill-switch + pause controls, alerting, health
