@@ -333,3 +333,56 @@ Built on top of Phase 0 + Phase 1 contracts. See `Changelog.md` for full list.
 No execution code is built until Phase 3 exists and all risk-gate tests pass.
 
 — end Session 3 —
+
+---
+
+## SESSION 4 — Phase 3: Risk Management Layer
+
+**Date:** 2026-06-26
+**Status:** **DONE — D.** All tests green: **380 passed, 3 Postgres-integration skipped** (+121
+new tests from Phase 3). Built directly on Phase 0–2 contracts. See `Changelog.md`.
+
+### Deliverables built
+
+| File | What it does |
+|---|---|
+| `core/risk/__init__.py` | Package marker; exports `RiskManager`, `VetoReason`, `TradeApproval`, `GiveBackLevel`, `RiskState` |
+| `core/risk/models.py` | `VetoReason` (11 reasons), `GiveBackLevel` (NONE/WARN/HALT), `TradeApproval` (frozen Pydantic), `RiskState` (mutable daily dataclass) |
+| `core/risk/pre_trade.py` | Pure function `evaluate_pre_trade()` — all pre-trade vetoes: U1 (Tier-B), 2:1 RR, U4 (daily loss + give-back), U5 (3-strikes), U2 (average-down), §13.11 (PDT), U15 (SKIP catalyst), §7 (hard-stop time) |
+| `core/risk/sizing.py` | Pure function `compute_size()` — risk_formula or flat_block, cushion/icebreaker, starter cap, conviction × DOW × market-state multipliers, liquidity cap, MAX_SIZE ceiling |
+| `core/risk/monitors.py` | Five pure monitor functions: `is_mental_stop_breached` (U13), `evaluate_give_back` (C3), `is_daily_loss_limit` (U4), `should_flatten_eod` (U3), `is_past_hard_stop_time` (§7) |
+| `core/risk/manager.py` | `RiskManager` — stateful class tying everything together; `evaluate()` is the mandatory gate; `record_open/close`, `reset_session`, `halt_session`, live monitors |
+| `core/config.py` | Added Phase 3 config keys: `AVG_WIN_DAY_PNL`, `LIQUIDITY_CAP_FRACTION`, `MARKET_STATE_COLD_MULT`, `MARKET_STATE_REHAB_CAP`, `EOD_FLATTEN_TIME`, `DOW_FRIDAY_MULT` |
+| `tests/test_pre_trade.py` | 31 tests — each veto rule has pass + fail; fast-path HALTED; multiple-veto accumulation |
+| `tests/test_sizing.py` | 27 tests — both modes, all caps (cushion/icebreaker/starter/conviction/DOW/market-state/liquidity/MAX_SIZE), degenerate stops |
+| `tests/test_risk_monitors.py` | 29 tests — all five pure functions; boundary values for give-back thresholds, daily loss formula, time gates |
+| `tests/test_risk_manager.py` | 34 tests — evaluate() happy path, veto paths, full position lifecycle, three-strikes, reset, live monitors |
+
+### Key design decisions
+
+- **Risk Manager is the SOLE gate.** `evaluate()` returns `TradeApproval(approved, shares, vetoes)`. Nothing proceeds to execution unless `approved=True`. Every veto is auditable in the returned `vetoes` tuple (for `risk_events` logging by the caller).
+- **All pre-trade checks in priority order:** fast-path exits immediately on `halted`. Otherwise all applicable checks accumulate into the returned list (multiple vetoes surfaced at once).
+- **Sizing ladder (spec §6):** ≤0 PnL → icebreaker (¼ max); 0→CUSHION_PNL_THRESHOLD → starter cap; ≥ threshold → scale. Applies in both risk_formula and flat_block modes.
+- **MAX_DAILY_LOSS formula:** `min(equity × 10%, AVG_WIN_DAY_PNL, BROKER_HARD_LOCKOUT)` — most conservative of all three. `AVG_WIN_DAY_PNL` default = $1,000 (cautious; overrideable from ledger history).
+- **SIZING_ZERO veto:** fires when `compute_size()` returns 0. Cannot happen when stop = entry (that case fires RR_BELOW_MIN first since rr=0). Can happen when PER_TRADE_RISK is tiny relative to risk-per-share.
+- **REHAB mode** caps at `MARKET_STATE_REHAB_CAP` (default 1,000 shares) — more conservative than COLD (×0.50 mult).
+- **DOW Friday** multiplied by `DOW_FRIDAY_MULT` (default 0.75); Monday by `DOW_MONDAY_MULT` (0.50); Wed/Thu unmodified.
+- **No native STOP ever (U13):** `is_mental_stop_breached()` returns a bool; caller fires marketable-limit. The Risk Manager does not route any order type; it only approves or vetoes.
+- **`signals` table write-path still deferred:** `SignalRow` DB persistence belongs in Phase 4 (Execution) once the RiskManager-approved lot is known.
+
+### Bug fixed in tests
+- `test_risk_manager.py`: `_NOW_EARLY` was `2026-06-26` which is a **Friday** (DOW×0.75 applied unexpectedly). Fixed to `2026-06-24` (Wednesday, day_of_week=2 → no DOW multiplier).
+
+### Open questions / carried forward
+- Two production-blocking client decisions still open: (1) data/broker vendor; (2) account type/equity.
+- `AVG_WIN_DAY_PNL` default ($1,000) is conservative. In production this should be computed from the `ledger` table (rolling average of winning sessions). Wire in Phase 4/6.
+- `LIQUIDITY_CAP_FRACTION` config key added but not yet used in `compute_size()` (depth data not yet wired). The caller can pass `liquidity_cap_shares` derived from real book depth once L2 adapter is live (Phase 8).
+- No-overnight flatten (`should_flatten_eod`) fires at EOD but the actual flatten order is the execution layer's job (Phase 4+). Phase 3 only sets the flag.
+- PDT guard uses `trades_today` incremented at `record_open`. If `MAX_TRADES_PER_DAY=1` (cash default), the second trade is blocked regardless of whether the first closed. For multi-trade accounts, set `MAX_TRADES_PER_DAY` to the actual PDT limit.
+
+### Next step
+**Phase 4 — Paper Trading & Backtesting**: event-driven replay backtester, §12 regression fixtures
+as full end-to-end pass/fail, paper simulator, and U6 gate (≥10 sim days @ ≥60% accuracy).
+No live capital until U6 is satisfied and the client decisions are resolved.
+
+— end Session 4 —

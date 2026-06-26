@@ -518,6 +518,63 @@ DEFAULTS: list[ConfigDefault] = [
         "§4A RKDA",
         "Lookback bars to locate the prior high-volume spike for light-vol check.",
     ),
+    # ==========================================================================
+    # PHASE 3 — Risk Management Layer (pre-trade gate, sizing, live monitors).
+    # Non-conflict operational numbers from spec §5/§6/§7/§8/§11/§13.11.
+    # ==========================================================================
+    # ── C2: average winning day PnL (used in MAX_DAILY_LOSS formula, spec §5) ─
+    ConfigDefault(
+        "AVG_WIN_DAY_PNL",
+        "1000.00",
+        ValueType.DECIMAL,
+        "risk",
+        "C2/§5",
+        "Fallback avg winning-day PnL; MAX_DAILY_LOSS = min(equity×pct, this, lockout).",
+    ),
+    # ── U9/§13.6: liquidity cap — never be the whole book ──────────────────────
+    ConfigDefault(
+        "LIQUIDITY_CAP_FRACTION",
+        "0.10",
+        ValueType.DECIMAL,
+        "sizing",
+        "U9/§13.6",
+        "Max fraction of displayed book volume any single order may represent.",
+    ),
+    # ── §8: market-state size multipliers ──────────────────────────────────────
+    ConfigDefault(
+        "MARKET_STATE_COLD_MULT",
+        "0.50",
+        ValueType.DECIMAL,
+        "sizing",
+        "§8",
+        "COLD market size multiplier (cap ~50% of normal; spec §8 COLD caps).",
+    ),
+    ConfigDefault(
+        "MARKET_STATE_REHAB_CAP",
+        "1000",
+        ValueType.INT,
+        "sizing",
+        "§8",
+        "Absolute share cap in REHAB mode (micro size; spec §8 'as low as 100 sh').",
+    ),
+    # ── U3: EOD flatten time (spec §11 U3) ─────────────────────────────────────
+    ConfigDefault(
+        "EOD_FLATTEN_TIME",
+        "15:55",
+        ValueType.TIME,
+        "timing",
+        "U3/§11",
+        "Flatten all positions at or after this ET time (5 min before close).",
+    ),
+    # ── §5: day-of-week weighting (Friday multiplier) ──────────────────────────
+    ConfigDefault(
+        "DOW_FRIDAY_MULT",
+        "0.75",
+        ValueType.DECIMAL,
+        "sizing",
+        "§5",
+        "Friday size multiplier (slow/holiday days; tighten quality bar per spec §5).",
+    ),
     # ======================================================================
     # PHASE 1 — Data layer (scanner / RVOL / feeds). Hard-rule operational
     # numbers from spec §1 (two-tier model), §9 (scanner defs), §2A. Not
