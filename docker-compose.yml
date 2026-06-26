@@ -1,0 +1,40 @@
+# RossBot local infra: PostgreSQL (+TimescaleDB) and Redis.
+# Image tags web-verified 2026-06-26:
+#   timescale/timescaledb-ha — bundles PostgreSQL + TimescaleDB extension + Toolkit
+#     (hub.docker.com/r/timescale/timescaledb-ha). Pinned to a pg17 tag, NOT :latest,
+#     to avoid surprise Postgres/Timescale major upgrades (vendor's own warning).
+#   redis 8 — redis-py 8.x speaks RESP3 (hub.docker.com/_/redis).
+services:
+  postgres:
+    image: timescale/timescaledb-ha:pg17.10-ts2.28.1
+    environment:
+      POSTGRES_USER: rossbot
+      POSTGRES_PASSWORD: rossbot
+      POSTGRES_DB: rossbot
+      TIMESCALEDB_TELEMETRY: "off"
+    ports:
+      - "5432:5432"
+    volumes:
+      - rossbot_pgdata:/home/postgres/pgdata/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rossbot -d rossbot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8.0.1
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - rossbot_redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  rossbot_pgdata:
+  rossbot_redisdata:

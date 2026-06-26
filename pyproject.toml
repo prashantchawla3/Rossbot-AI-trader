@@ -1,0 +1,93 @@
+# RossBot — Phase 0 dependency manifest.
+# All versions web-verified 2026-06-26 against PyPI / official docs (see PROGRESS.md
+# "Versions verified" table). Pinned exactly per STANDING RULES A (no guessed versions).
+[project]
+name = "rossbot"
+version = "0.0.0"
+description = "Automated US-equities day-trading bot replicating Ross Cameron's strategy (spec V2.0)."
+requires-python = ">=3.13,<3.14"   # verified: python.org/downloads — 3.13.14 latest patch (2026-06)
+readme = "README.md"
+
+dependencies = [
+    # API layer (api/) — verified: pypi.org/project/fastapi (2026-06)
+    "fastapi==0.138.1",
+    "uvicorn[standard]==0.49.0",          # verified: pypi.org/project/uvicorn (2026-06)
+    # config + typed models — verified: pypi.org/project/pydantic, pydantic-settings (2026-06)
+    "pydantic==2.13.4",
+    "pydantic-settings==2.14.2",
+    # persistence (db/) — verified: pypi.org/project/SQLAlchemy, alembic, psycopg (2026-06)
+    "sqlalchemy==2.0.51",
+    "alembic==1.18.5",
+    "psycopg[binary]==3.3.4",             # psycopg 3 driver (sync + async)
+    # hot state / pub-sub — verified: pypi.org/project/redis (2026-06; redis-py 8.x = RESP3 default)
+    "redis==8.0.1",
+    # structured JSON logging — verified: pypi.org/project/structlog (2026-06)
+    "structlog==26.1.0",
+    # NTP clock-drift check util — verified: pypi.org/project/ntplib (2026-06)
+    "ntplib==0.4.0",
+    # zoneinfo tz database (required on Windows; stdlib zoneinfo has no bundled db there)
+    "tzdata>=2026.1",
+]
+
+[dependency-groups]
+# dev tooling — verified: pypi.org/project/{ruff,mypy,pytest} (2026-06)
+dev = [
+    "ruff==0.15.20",
+    "mypy==2.1.0",
+    "pytest==9.1.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# Monorepo packages per ROSSBOT_PROJECT_PLAN.md Phase 0. dashboard/ is Next.js (Phase 5), not a wheel.
+packages = ["core", "adapters", "db", "api"]
+
+# ---------------------------------------------------------------------------
+# Ruff (lint + format) — STANDING RULES D
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["core", "adapters", "db", "api", "tests"]
+
+[tool.ruff.lint]
+# E/F pyflakes+pycodestyle, I import-sort, UP pyupgrade, B bugbear, SIM, RUF,
+# and PLR2004 (magic-value) to push spec ⚠️CONFLICT numbers into the config table.
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "PLR2004"]
+# RUF001/002/003: spec citations intentionally use §, –, →, ⚠️ — not typos.
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests + the config seed legitimately contain literal expected values.
+"tests/**" = ["PLR2004"]
+"db/config_seed.py" = ["PLR2004"]
+"db/migrations/**" = ["PLR2004"]
+
+# ---------------------------------------------------------------------------
+# mypy (typecheck) — STANDING RULES D
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unused_ignores = true
+warn_return_any = true
+disallow_untyped_defs = true
+plugins = ["pydantic.mypy"]
+files = ["core", "adapters", "db", "api", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["ntplib.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"
+markers = [
+    "integration: requires a live Postgres (set ROSSBOT_TEST_DATABASE_URL); skipped otherwise",
+]

@@ -1,0 +1,55 @@
+# CI: lint + typecheck + tests on PR (STANDING RULES D).
+# Verified 2026-06: actions/checkout@v6; astral-sh/setup-uv@v8 (github.com/astral-sh/setup-uv);
+# timescaledb-ha pg17 service image (hub.docker.com/r/timescale/timescaledb-ha).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: timescale/timescaledb-ha:pg17.10-ts2.28.1
+        env:
+          POSTGRES_USER: rossbot
+          POSTGRES_PASSWORD: rossbot
+          POSTGRES_DB: rossbot_test
+          TIMESCALEDB_TELEMETRY: "off"
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rossbot -d rossbot_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      ROSSBOT_TEST_DATABASE_URL: postgresql+psycopg://rossbot:rossbot@localhost:5432/rossbot_test
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8
+        with:
+          enable-cache: true
+
+      - name: Install dependencies (pinned)
+        run: uv sync --all-groups
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Mypy typecheck
+        run: uv run mypy
+
+      - name: Pytest (unit + integration)
+        run: uv run pytest

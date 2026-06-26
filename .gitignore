@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Env / secrets — NEVER commit real keys (STANDING RULES B)
+.env
+.env.*
+!.env.example
+
+# uv
+# uv.lock IS committed (reproducible installs); nothing to ignore here.
+
+# Node / Next.js (dashboard, Phase 5)
+node_modules/
+dashboard/.next/
+dashboard/out/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
