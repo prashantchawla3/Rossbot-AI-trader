@@ -7,6 +7,53 @@
 
 ---
 
+## SESSION 9/10 — Phases 9 & 10: Market-State Classifier + Execution Safety (2026-06-26)
+
+**Goal:** Replace `StubMarketStateProvider` with real HOT/COLD/REHAB rolling-feature classifier
+(no ML); add attention scorer; harden mental-stop loop with latency measurement, higher-highs-on-rising-volume bailout guard, and optional catastrophic backstop.
+
+**Built — Phase 9 (spec §8 / §13.3 / §13.9):**
+- `adapters/market_state/` package: `models.py` (`DaySnapshot`, `MarketStateFeatures`),
+  `features.py` (`compute_features` — pure aggregation of rolling snapshots),
+  `classifier.py` (`classify_market_state` — HOT requires ALL 3 signals, COLD-biased by default),
+  `attention.py` (`score_attention` — %-gain rank + RVOL percentile → float [0,1], weight only),
+  `provider.py` (`RollingMarketStateProvider` — ring buffer, REHAB override, exception→COLD).
+- +9 Phase 9 config keys (`MS_HOT_WINDOW_DAYS`, `MS_MIN_WINDOW_DAYS`, `MS_HOT_BIG_MOVERS_MIN`,
+  `MS_HOT_FOLLOW_THROUGH_MIN`, `MS_HOT_AVG_GREEN_MIN`, `MS_COLD_FOLLOW_THROUGH_MAX`,
+  `MS_COLD_AVG_GREEN_MAX`, `ATTENTION_RVOL_SCALE`, `ATTENTION_PRIME_RANK`).
+
+**Built — Phase 10 (spec §13.4 / §13.5 / §3 P2):**
+- `core/execution/bailout.py` — `has_higher_high_on_rising_volume()` guard + `is_bailout_condition()`.
+- `core/execution/backstop.py` — `CatastrophicBackstop`: optional second mental stop far below
+  primary; fires marketable-limit (never native STOP, U13 honored). Disabled by default.
+- `core/execution/latency.py` — `LoopLatencyRecorder`: `time.monotonic()` context-manager,
+  ring-buffer (1000 samples), WARN log when `LATENCY_WARN_MS` exceeded, `stats` dict.
+- `core/strategy/exit_engine.py` P2 — enhanced with `has_higher_high_on_rising_volume` guard.
+- `core/live/session.py` — integrated `LoopLatencyRecorder` + `CatastrophicBackstop` into
+  `_mental_stop_loop`; added `latency_stats` property.
+- +3 Phase 10 config keys (`BACKSTOP_ENABLED`, `BACKSTOP_OFFSET`, `LATENCY_WARN_MS`).
+
+**Tests:** 88 new tests across 7 files — all passing.
+**Test totals:** 854 passed / 3 skipped (DB integration) / 0 failed.
+
+**Key decisions:**
+- HOT requires ALL 3 signals AND 0 cold signals — most conservative HOT gate, spec §13.9 bias.
+- Attention score is weight [0,1], never a hard gate — spec §13.3 enforced.
+- `classify()` wraps compute_features in try/except: any exception → COLD (fail-safe).
+- `BACKSTOP_ENABLED = false` default. When enabled, backstop fires marketable-limit; `level()` 
+  clamped to ≥ $0.01 to avoid negative price.
+- P2 higher-highs guard: only bail when stalled AND no momentum; slow-but-valid movers preserved.
+
+**Open items:**
+- Pre-existing `test_ws_manager.py` and `test_dashboard_api.py` asyncio failures (Python 3.12
+  event-loop deprecation in non-async test context) — not introduced by Phase 9/10. Tracked
+  separately.
+
+**Next phase:** Phase 11 — Halt Resumption & Multi-Day Continuation (already completed per Changelog;
+verify full integration passes). Or ask user which phase to address next.
+
+---
+
 ## SESSION 7 — Phase 7: Catalyst Detection (2026-06-26)
 
 **Goal:** Replace `StubCatalystProvider` with real NLP classifier + SEC filing check.

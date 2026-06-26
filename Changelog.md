@@ -2,6 +2,122 @@
 
 All notable changes per CLAUDE.md §11.4. Format: reverse-chronological, one entry per phase/change.
 
+## [Phases 9-10] Market-State Classifier + Execution Safety — 2026-06-26
+
+88 new tests; total 854 passing / 3 skipped (DB integration).
+
+### Phase 9 — Market-State Classifier + Attention (spec §8 / §13.3 / §13.9)
+
+Replaced `StubMarketStateProvider` (forced COLD) with rolling-feature heuristic classifier.
+
+- `adapters/market_state/models.py` — `DaySnapshot` (frozen dataclass: per-day market stats),
+  `MarketStateFeatures` (frozen dataclass: aggregated rolling window stats).
+- `adapters/market_state/features.py` — `compute_features(snapshots)`: pure aggregation; returns
+  all-None features when list is empty; Decimal fractions, None when denominator = 0.
+- `adapters/market_state/classifier.py` — `classify_market_state(features, cfg)`: HOT requires
+  ALL 3 signals (big-movers ≥ `MS_HOT_BIG_MOVERS_MIN`, gapper FT ≥ `MS_HOT_FOLLOW_THROUGH_MIN`,
+  avg green ≥ `MS_HOT_AVG_GREEN_MIN`) AND 0 cold signals. Insufficient window → COLD.
+  Default = COLD (bias per §13.9). REHAB via provider override.
+- `adapters/market_state/attention.py` — `score_attention(rank, rvol, cfg) → float [0,1]`:
+  rank score (PRIME/WATCH/IGNORE tiers) + RVOL percentile → 0.6/0.4 composite.
+  Attention is a weight, NEVER a hard gate (spec §13.3).
+- `adapters/market_state/provider.py` — `RollingMarketStateProvider`: ring buffer pruned to
+  `MS_HOT_WINDOW_DAYS`; `record_day(snapshot)`, `set_rehab(bool)`; `classify()` wraps in
+  try/except → COLD on any exception (fail-safe).
+- **Config additions**: `MS_HOT_WINDOW_DAYS` (5), `MS_MIN_WINDOW_DAYS` (3),
+  `MS_HOT_BIG_MOVERS_MIN` (2), `MS_HOT_FOLLOW_THROUGH_MIN` (0.60),
+  `MS_HOT_AVG_GREEN_MIN` (0.25), `MS_COLD_FOLLOW_THROUGH_MAX` (0.35),
+  `MS_COLD_AVG_GREEN_MAX` (0.10), `ATTENTION_RVOL_SCALE` (100.0), `ATTENTION_PRIME_RANK` (3).
+
+### Phase 10 — Execution Safety: Mental Stops & Time Stop (spec §13.4 / §13.5 / §3 P2)
+
+Hardened the no-native-stop path, quantified breakout-or-bailout, added latency measurement.
+
+- `core/execution/bailout.py` — `has_higher_high_on_rising_volume(bars, entry_price)`:
+  True if any consecutive pair: curr.high > prev.high AND > entry AND vol ≥ prev.
+  `is_bailout_condition(...)`: time stop guard; NOT fired when momentum present.
+- `core/execution/backstop.py` — `CatastrophicBackstop`: optional second internal mental stop
+  `BACKSTOP_OFFSET` below entry; fires marketable-limit only (U13 honored); clamped ≥ $0.01.
+  Disabled by default (`BACKSTOP_ENABLED = false`).
+- `core/execution/latency.py` — `LoopLatencyRecorder`: `time.monotonic()` context manager;
+  ring-buffer (1000 samples); WARN log when elapsed > `LATENCY_WARN_MS`; `stats` dict;
+  `clear()` resets.
+- `core/strategy/exit_engine.py` P2 — added `has_higher_high_on_rising_volume` guard before
+  bailout fires; slow-but-valid movers with rising-volume higher highs are preserved (§3 P2).
+- `core/live/session.py` — `_mental_stop_loop` wrapped with latency measurement;
+  backstop check added (fires same marketable-limit path as primary); `latency_stats` property.
+- **Config additions**: `BACKSTOP_ENABLED` (false), `BACKSTOP_OFFSET` (0.50),
+  `LATENCY_WARN_MS` (200).
+
+### Tests
+- `tests/test_market_state_features.py` — 12 tests (compute_features: empty, rates, Decimal).
+- `tests/test_market_state_classifier.py` — 14 tests (HOT/COLD/REHAB/insufficient window).
+- `tests/test_attention_scorer.py` — 13 tests (rank tiers, RVOL scaling, composite score).
+- `tests/test_market_state_provider.py` — 12 tests (ring buffer, REHAB override, exception→COLD).
+- `tests/test_bailout.py` — 14 tests (7 for higher-highs guard, 7 for is_bailout_condition).
+- `tests/test_catastrophic_backstop.py` — 13 tests (disabled/enabled, levels, U13 structural).
+- `tests/test_latency_recorder.py` — 9 tests (stats, ring-buffer cap, warn log, exception body).
+
+## [Phases 11-13] Halt Resumption, Multi-Day Continuation, Sizing/Liquidity, Regulatory Compliance — 2026-06-26
+
+Three phases delivered together. 77 new tests; total 817 passing / 3 skipped (DB integration).
+
+### Phase 11 — Halt Resumption & Multi-Day Continuation (spec §12A/§13.7/§12B/§13.10)
+
+**Halt Engine** (`core/halt/`):
+- `core/halt/models.py` — `HaltType` (LULD_UP/LULD_DOWN/NEWS/UNKNOWN), `HaltEvent`,
+  `ResumeQuote`, `PreHaltSignal`, `HaltDecision` (ENTER/SKIP/BLOCKED).
+- `core/halt/engine.py` — `evaluate_halt_resumption()`: POST_HALT default (C14);
+  EX5 hard-block for halt-down resumptions unless VWAP reclaimed; SKIP if resume < pre-halt
+  or no green prints. `evaluate_pre_halt_entry()`: PRE_HALT aggressive mode, HOT only.
+- **EX5 fixture**: LULD_DOWN or resume_price < pre_halt → BLOCKED unless resume > VWAP.
+- **ARM/CTRM/PHVS fixtures**: halt-up + resume ≥ prior price + green prints → ENTER.
+
+**Continuation Engine** (`core/continuation/`):
+- `core/continuation/models.py` — `ContinuationContext`, `EligibilityResult`,
+  `DoneReason`, `Day2Settings`.
+- `core/continuation/engine.py` — `evaluate_day2_eligibility()`: Day-1 ≥100% move AND
+  close ≥ 70% of high. `check_continuation_done()`: RVOL<25% prior / retrace>50% /
+  MACD cross / VWAP broken → done. `get_day2_settings()`: 5-min timeframe + 50% size.
+
+**Config additions (Phase 11)**:
+  `PRE_HALT_BAND_ENTRY_PCT`, `CONTINUATION_MIN_DAY1_PCT`, `CONTINUATION_HOLD_PCT`,
+  `CONTINUATION_RVOL_DONE_PCT`, `CONTINUATION_RETRACE_DONE_PCT`, `CONTINUATION_SIZE_FRACTION`.
+
+### Phase 12 — Sizing/Liquidity & Pattern Hardening (spec §13.6/§13.8)
+
+- `core/risk/sizing.py` — `compute_adv_liquidity_cap(adv_shares, cfg)`: caps order at
+  `ADV_CAP_FRACTION` (default 1%) of Average Daily Volume. `compute_depth_cap(asks, cfg)`:
+  aggregates top `DEPTH_CAP_LEVELS` (default 3) ask levels × `LIQUIDITY_CAP_FRACTION` (10%).
+  Callers pass `min(adv_cap, depth_cap)` as `liquidity_cap_shares` to `compute_size()`.
+- Mid-candle HOT-only gate: already implemented in `core/strategy/entry_gate.py:209` (C12).
+  Confirmed no changes needed — mid-candle correctly blocked when market_state ≠ HOT.
+- **Config additions**: `ADV_CAP_FRACTION` (0.01), `DEPTH_CAP_LEVELS` (3).
+
+### Phase 13 — Regulatory / Account Compliance (spec §13.11)
+
+**REGULATORY UPDATE (2026-06-04)**: FINRA eliminated the PDT rule (FINRA Rule 4210
+amendment). The $25,000 minimum equity requirement and ≤3-day-trades-in-5-days restriction
+are NO LONGER ACTIVE. `MAX_TRADES_PER_DAY` from config remains as the conservative guard.
+
+- `core/compliance/pdt.py` — `PDTGuard`: tracks intraday round-trips; enforces
+  `MAX_TRADES_PER_DAY`; cash accounts capped at 1 (T+1 unsettled-fund restriction).
+- `core/compliance/wash_sale.py` — `WashSaleTracker`: flags IRC §1091 wash-sale risk
+  on re-entry within 30 days of a loss. Advisory only — not a hard block; logged to audit.
+- `core/compliance/ssr.py` — `is_ssr_active()`: SEC Rule 201 SSR trigger (≥10% down).
+  `luld_band_pct()` / `luld_bands()`: FINRA Rule 7100A LULD band computation by price tier.
+  SSR is long-only informational; wired into halt context.
+- `core/compliance/startup_gate.py` — `evaluate_startup_compliance()`: hard-gate at boot;
+  blocks UNKNOWN account type; blocks zero buying power; cash → MAX_TRADES=1;
+  margin → warns if equity < READINESS_MIN_EQUITY (no longer a hard PDT block).
+- **Config additions**: `SSR_LOG_ONLY`, `WASH_SALE_WARN_ENABLED`, `COMPLIANCE_SHORTING_ENABLED`.
+
+### Tests
+- `tests/test_halt_engine.py` — 16 tests (ARM/CTRM/PHVS fixtures, EX5 blocked, pre-halt).
+- `tests/test_continuation_engine.py` — 16 tests (eligibility, all 4 done-conditions).
+- `tests/test_sizing_liquidity.py` — 12 tests (ADV cap, depth cap, TRNR/ESTR oversize).
+- `tests/test_compliance.py` — 33 tests (PDT, wash-sale, SSR, LULD bands, startup gate).
+
 ## [Phase 8] L2 / Tape Microstructure Engine — 2026-06-26
 
 Replaced `StubL2SignalProvider` (always UNKNOWN) with `L2MicrostructureProvider` — a real
