@@ -2,6 +2,84 @@
 
 All notable changes per CLAUDE.md §11.4. Format: reverse-chronological, one entry per phase/change.
 
+## [Phase 7] Catalyst Detection — 2026-06-26
+
+Replaced `StubCatalystProvider` (always UNVERIFIED) with `NLPCatalystProvider` — a real
+layered classifier. Defence-in-depth: reaction-proof gate → SEC EDGAR dilution check →
+Benzinga headline fetch → keyword SKIP scan → Claude Haiku 4.5 LLM tagging.
+Hard-blocks PALI (secondary offering) and PTPI (buyout). Biases to UNVERIFIED/SKIP on ambiguity.
+
+### Added (Python — catalyst detection)
+
+- **`adapters/catalyst/__init__.py`** — Package marker; re-exports `CatalystResult`,
+  `CatalystTag`, `NewsItem`, `NLPCatalystProvider`.
+
+- **`adapters/catalyst/models.py`** — `CatalystTag` StrEnum (12 accepted + 7 SKIP + unknown);
+  `ACCEPTED_TAGS`/`SKIP_TAGS` frozensets; `NewsItem` frozen dataclass (headline, body, url,
+  source, published_at); `CatalystResult` frozen dataclass (tag, confidence, reasoning, source).
+
+- **`adapters/catalyst/keyword_filter.py`** — `scan_for_skip(text)` instant substring SKIP
+  detector. No API call. Covers: buyout/acquisition (SKIP_1), secondary/shelf offering (SKIP_3),
+  pump/newsletter (SKIP_4), 5-cent tick pilot (SKIP_6). Bias: conservative — only clear-signal
+  phrases matched.
+
+- **`adapters/catalyst/sec_filing.py`** — `SecFilingClient` checks EDGAR submissions API
+  (free, no key: `data.sec.gov/submissions/CIK###.json`) for recent S-1/S-3/424B* filings
+  (dilution → SKIP) and 13D/13G (accepted catalyst). Reuses `parse_ticker_map` from
+  `adapters/edgar.py`. CIK map cached across calls. Fail-safe: network error → False (no
+  false-SKIP).
+
+- **`adapters/catalyst/benzinga_feed.py`** — `BenzingaNewsClient` fetches recent headlines
+  via `https://api.benzinga.com/api/v2/news`. Auth via `BENZINGA_API_KEY` env var (secret —
+  never stored in DB). `updatedSince` delta polling. Falls back to [] on any error (fail-safe).
+  Network I/O injectable for offline tests.
+
+- **`adapters/catalyst/llm_classifier.py`** — `LLMCatalystClassifier` zero-shot structured
+  JSON output via Claude Haiku 4.5 (`claude-haiku-4-5-20251001`; $1/$5 per MTok I/O,
+  ≈$0.001/call verified 2026-06-26). Injected `client` param for offline tests. Falls back to
+  `CatalystResult(UNKNOWN, 0)` on missing key, API error, or malformed JSON. Strips markdown
+  fences from response.
+
+- **`adapters/catalyst/provider.py`** — `NLPCatalystProvider` orchestrates all 5 layers.
+  Accepts optional `rvol` / `roc_pct` kwargs for the reaction-proof gate (spec §13.1
+  REAL_CATALYST ≥10% + ≥5×). All sub-components injectable. Async with `asyncio.to_thread`
+  for sync I/O (urllib / Anthropic SDK).
+
+- **`core/config.py`** — +5 Phase 7 config keys: `CATALYST_LLM_ENABLED` (true),
+  `CATALYST_LLM_MODEL` ("claude-haiku-4-5-20251001"), `CATALYST_CONFIDENCE_THRESHOLD` (0.70),
+  `CATALYST_FILING_LOOKBACK_DAYS` (30), `CATALYST_MAX_HEADLINES` (5).
+
+### Modified
+
+- **`adapters/providers.py`** — `CatalystProvider.classify` extended with keyword-only
+  `rvol: Decimal | None = None` and `roc_pct: Decimal | None = None` args (backward-compatible;
+  existing callers unaffected). Added `from decimal import Decimal` import.
+
+- **`adapters/stubs.py`** — `StubCatalystProvider.classify` updated to accept new kwargs
+  (still returns UNVERIFIED — Rule C unchanged).
+
+### Tests (66 new, all passing)
+
+- `tests/test_catalyst_keyword.py` — 23 tests: parametrized SKIP phrase hits for
+  buyout/secondary/pump/5c-tick; parametrized no-hit for accepted catalysts; case-insensitive;
+  first-match determinism.
+- `tests/test_catalyst_sec_filing.py` — 13 tests: `_has_recent_filing` unit tests (S-3/424B3
+  detect, old filing excluded, 8-K excluded, empty, bad JSON); `SecFilingClient` integration
+  tests (PALI dilution, no filing, unknown ticker, network error, stake filing, UA validation,
+  CIK map caching).
+- `tests/test_catalyst_llm.py` — 13 tests: PTPI/PALI SKIP classification; FDA/earnings VERIFIED;
+  low confidence preserved; UNKNOWN for ambiguous; error paths (no key, no headlines, API error,
+  malformed JSON, unknown tag string, markdown fences).
+- `tests/test_catalyst_provider.py` — 17 tests: PALI SKIP via SEC/keyword/LLM; PTPI SKIP via
+  keyword/LLM; FDA VERIFIED with and without reaction proof; reaction gate low rvol/roc → UNVERIFIED;
+  no headlines → UNVERIFIED; low confidence → UNVERIFIED; LLM disabled → UNVERIFIED; stub still
+  fails closed; stub accepts new kwargs.
+
+### Env vars required for live operation (never in DB)
+
+- `BENZINGA_API_KEY` — Benzinga Pro REST API token
+- `ANTHROPIC_API_KEY` — Claude API key (Haiku 4.5)
+
 ## [Phase 6] Live Trading — 2026-06-26
 
 Hardened live broker path. Real money gate: U6 + readiness checklist + client sign-off. Staged

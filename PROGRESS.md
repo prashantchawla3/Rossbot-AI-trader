@@ -7,6 +7,51 @@
 
 ---
 
+## SESSION 7 — Phase 7: Catalyst Detection (2026-06-26)
+
+**Goal:** Replace `StubCatalystProvider` with real NLP classifier + SEC filing check.
+
+**Web research conducted before coding (verified 2026-06-26):**
+- Benzinga Pro REST: `https://api.benzinga.com/api/v2/news?token={key}&tickers={sym}&updatedSince={ts}`
+  Auth via `BENZINGA_API_KEY` env var. WS stream at `wss://api.benzinga.com/api/v1/news/stream`.
+  Docs: https://docs.benzinga.com/home
+- EDGAR submissions API (free, no key): `https://data.sec.gov/submissions/CIK{cik}.json`
+  Returns all recent filings (form + date arrays). Better than EFTS text search for ticker-specific
+  dilution checks. Reuses existing `parse_ticker_map` from `adapters/edgar.py`.
+- Claude Haiku 4.5 (`claude-haiku-4-5-20251001`): $1/$5 per MTok I/O ≈ $0.001/classification.
+  Zero-shot structured JSON output. Docs: https://platform.claude.com/docs/en/about-claude/pricing
+
+**Built:**
+- `adapters/catalyst/` package: `models.py`, `keyword_filter.py`, `sec_filing.py`,
+  `benzinga_feed.py`, `llm_classifier.py`, `provider.py`
+- Extended `CatalystProvider.classify` ABC to accept optional `rvol`/`roc_pct` kwargs
+  (backward-compatible — all callers unaffected; stubs updated to match)
+- +5 Phase 7 config keys in `core/config.py`
+- 66 new tests (all passing): keyword, SEC filing, LLM classifier, full provider acceptance
+
+**Test totals:** 627+ tests passing / 3 skipped (DB integration, pre-existing)
+
+**Key decisions:**
+- Defence-in-depth ordering (fastest/cheapest first): reaction gate → SEC EDGAR → headlines →
+  keyword → LLM. Short-circuits on first SKIP hit.
+- EDGAR submissions API preferred over EFTS text-search: deterministic, ticker-scoped,
+  no query ambiguity.
+- Ambiguity → UNVERIFIED (not SKIP). SKIP only when evidence is clear. False-negative is safe.
+- LLM confidence threshold 0.70 (configurable). Below threshold → UNVERIFIED.
+- Sync I/O (urllib + Anthropic SDK) wrapped in `asyncio.to_thread` inside async `classify()`.
+
+**Open items (gating live catalyst use):**
+1. `BENZINGA_API_KEY` — client must subscribe to Benzinga Pro and provide key
+2. `ANTHROPIC_API_KEY` — client must provide Claude API key
+3. Without both keys, `NLPCatalystProvider` degrades to UNVERIFIED (same as stub) — safe
+4. `CATALYST_LLM_ENABLED = false` → keyword + SEC filing only (zero API cost)
+
+**Next phase:** Phase 8 — Level 2 / Tape Microstructure (replace `L2SignalProvider` stub).
+Requires Databento halt feed decision (open item from Phase 6). Before Phase 8, client must
+confirm data vendor for true L2 depth + tick tape.
+
+---
+
 ## SESSION 0 — Orientation (no code)
 
 **Date:** 2026-06-26

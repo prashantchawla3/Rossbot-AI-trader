@@ -812,6 +812,51 @@ DEFAULTS: list[ConfigDefault] = [
         "Phase6",
         "Maximum acceptable NTP clock drift (ms) before readiness check fails.",
     ),
+    # ==========================================================================
+    # PHASE 7 — Catalyst Detection (spec §1/§13.1).
+    # NLP news classifier + reaction-proof gate + SEC dilution check.
+    # Env vars for secrets: BENZINGA_API_KEY, ANTHROPIC_API_KEY (never in DB).
+    # ==========================================================================
+    ConfigDefault(
+        "CATALYST_LLM_ENABLED",
+        "true",
+        ValueType.BOOL,
+        "catalyst",
+        "§1/§13.1/Phase7",
+        "Enable Claude LLM for catalyst tag classification; false = keyword+filing only.",
+    ),
+    ConfigDefault(
+        "CATALYST_LLM_MODEL",
+        "claude-haiku-4-5-20251001",
+        ValueType.STR,
+        "catalyst",
+        "§1/§13.1/Phase7",
+        "Claude model ID for catalyst classification (Haiku 4.5: $1/$5 per MTok I/O).",
+    ),
+    ConfigDefault(
+        "CATALYST_CONFIDENCE_THRESHOLD",
+        "0.70",
+        ValueType.DECIMAL,
+        "catalyst",
+        "§1/§13.1/Phase7",
+        "Minimum LLM confidence to return VERIFIED; below threshold → UNVERIFIED.",
+    ),
+    ConfigDefault(
+        "CATALYST_FILING_LOOKBACK_DAYS",
+        "30",
+        ValueType.INT,
+        "catalyst",
+        "§1/§13.1/Phase7",
+        "Days back to check EDGAR submissions for dilution filings (S-1/S-3/424B).",
+    ),
+    ConfigDefault(
+        "CATALYST_MAX_HEADLINES",
+        "5",
+        ValueType.INT,
+        "catalyst",
+        "§1/§13.1/Phase7",
+        "Max headlines to fetch and pass to the LLM classifier (cost control).",
+    ),
 ]
 
 # Conflict keys (C1–C16) for validation/audit — every one must be present in the table.
