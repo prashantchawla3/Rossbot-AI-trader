@@ -29,6 +29,15 @@ dependencies = [
     "tzdata>=2026.1",
 ]
 
+[project.optional-dependencies]
+# Phase 1 market-data vendors. Optional so the core/test install stays lean; the adapters in
+# adapters/alpaca.py + adapters/databento.py import these lazily. Versions web-verified
+# 2026-06-26 (see PROGRESS.md). Indicators are hand-implemented on Decimal — no numpy/pandas.
+vendors = [
+    "alpaca-py==0.43.4",   # verified: pypi.org/project/alpaca-py (2026-04-29)
+    "databento==0.80.0",   # verified: pypi.org/project/databento (2026-06-17)
+]
+
 [dependency-groups]
 # dev tooling — verified: pypi.org/project/{ruff,mypy,pytest} (2026-06)
 dev = [
@@ -80,6 +89,12 @@ files = ["core", "adapters", "db", "api", "tests"]
 
 [[tool.mypy.overrides]]
 module = ["ntplib.*"]
+ignore_missing_imports = true
+
+# Phase 1 optional vendor SDKs (rossbot[vendors]) — imported lazily in the vendor adapters and
+# not installed in the lean test env. Treated as untyped so the gate runs without them.
+[[tool.mypy.overrides]]
+module = ["alpaca.*", "databento.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------

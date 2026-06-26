@@ -454,6 +454,154 @@ DEFAULTS: list[ConfigDefault] = [
         "§8/13.9",
         "Most conservative state; blocks EX1/EX2/mid-candle/oversize.",
     ),
+    # ======================================================================
+    # PHASE 1 — Data layer (scanner / RVOL / feeds). Hard-rule operational
+    # numbers from spec §1 (two-tier model), §9 (scanner defs), §2A. Not
+    # ⚠️CONFLICT keys; live here so PLR2004 keeps them out of code bodies.
+    # ======================================================================
+    # ---- Tier A wide net (spec §1 TIER_A_WIDE_NET / §9 GAP_SCAN) ----
+    ConfigDefault(
+        "TIER_A_GAP_MIN",
+        "4.0",
+        ValueType.DECIMAL,
+        "scanner",
+        "§1 TIER_A/§9",
+        "Tier-A wide-net gap/change %% floor (>= inclusive).",
+    ),
+    ConfigDefault(
+        "TIER_A_RVOL_MIN",
+        "2.0",
+        ValueType.DECIMAL,
+        "scanner",
+        "§1 TIER_A/§9",
+        "Tier-A wide-net relative-volume floor (>= inclusive).",
+    ),
+    ConfigDefault(
+        "TIER_A_FLOAT_CEILING",
+        "50000000",
+        ValueType.INT,
+        "scanner",
+        "§1 TIER_A/§9",
+        "Tier-A surveillance float ceiling (shares); Tier-B stays <=20M.",
+    ),
+    ConfigDefault(
+        "TIER_A_PRICE_MIN",
+        "1.00",
+        ValueType.DECIMAL,
+        "scanner",
+        "§1 TIER_A/§9",
+        "Tier-A wide-net price floor (surveillance only).",
+    ),
+    ConfigDefault(
+        "TIER_A_PRICE_MAX",
+        "20.00",
+        ValueType.DECIMAL,
+        "scanner",
+        "§1 TIER_A/§9",
+        "Tier-A wide-net price ceiling (surveillance only).",
+    ),
+    # ---- Attention ranking (spec §1) ----
+    ConfigDefault(
+        "ATTENTION_PRIME_RANK",
+        "3",
+        ValueType.INT,
+        "scanner",
+        "§1",
+        "Top-N by %%gain → PRIME attention.",
+    ),
+    ConfigDefault(
+        "ATTENTION_WATCH_RANK",
+        "10",
+        ValueType.INT,
+        "scanner",
+        "§1",
+        "Top-N by %%gain → WATCH attention (else IGNORE).",
+    ),
+    # ---- Volume sweet spot (ranking, not a gate) (spec §1 V2) ----
+    ConfigDefault(
+        "VOLUME_SWEET_LOW",
+        "5000000",
+        ValueType.INT,
+        "scanner",
+        "§1",
+        "Preferred EOD volume floor (shares); below = illiquid.",
+    ),
+    ConfigDefault(
+        "VOLUME_SWEET_HIGH",
+        "25000000",
+        ValueType.INT,
+        "scanner",
+        "§1",
+        "Preferred EOD volume ceiling (shares); above = HFT-dominated.",
+    ),
+    # ---- Sub-scanner thresholds (spec §9) ----
+    ConfigDefault(
+        "RUNNING_UP_PCT",
+        "5.0",
+        ValueType.DECIMAL,
+        "scanner",
+        "§9 RUNNING_UP_SCAN",
+        "Surge %% within RUNNING_UP_WINDOW_MIN, below HOD ('5%% in 5min').",
+    ),
+    ConfigDefault(
+        "RUNNING_UP_WINDOW_MIN",
+        "5",
+        ValueType.INT,
+        "scanner",
+        "§9 RUNNING_UP_SCAN",
+        "Lookback window (minutes) for the running-up surge.",
+    ),
+    ConfigDefault(
+        "LOW_FLOAT_SUBSCAN_CEILING",
+        "5000000",
+        ValueType.INT,
+        "scanner",
+        "§9 LOW_FLOAT_TOP_GAINER",
+        "Float ceiling (shares) for the low-float-top-gainer sub-scan.",
+    ),
+    # ---- RVOL engine (spec §1 PILLAR_3 / §13) ----
+    ConfigDefault(
+        "RVOL_BASELINE_DAYS",
+        "50",
+        ValueType.INT,
+        "scanner",
+        "§1/§9",
+        "Rolling baseline window (trading days) for the RVOL average.",
+    ),
+    ConfigDefault(
+        "RVOL_MIN_HISTORY_DAYS",
+        "20",
+        ValueType.INT,
+        "scanner",
+        "§1",
+        "Below this many baseline days, RVOL is flagged low-confidence.",
+    ),
+    # ---- Float resolver (spec §13.1 Pillar-2 dependency) ----
+    ConfigDefault(
+        "FLOAT_DISAGREE_TOLERANCE",
+        "0.05",
+        ValueType.DECIMAL,
+        "scanner",
+        "§13.1",
+        "Vendor-vs-EDGAR share-count mismatch beyond this fraction → low confidence.",
+    ),
+    # ---- Feed integrity (spec §10 fail-safe; CLAUDE.md §7.2) ----
+    ConfigDefault(
+        "REQUIRE_SIP",
+        "true",
+        ValueType.BOOL,
+        "feed",
+        "§9/CLAUDE§7.2",
+        "Reject IEX-only / single-venue feeds for scanning (consolidated/SIP required).",
+    ),
+    ConfigDefault(
+        "FEED_STALENESS_SECONDS",
+        "5",
+        ValueType.DECIMAL,
+        "feed",
+        "§10",
+        "Default feed-gap threshold; exceeding it trips staleness → do not trade.",
+    ),
 ]
 
 # Conflict keys (C1–C16) for validation/audit — every one must be present in the table.

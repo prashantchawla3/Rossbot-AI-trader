@@ -235,3 +235,51 @@ Phase 1 — Data Layer (Scanner + Market Data). Web-verify data-vendor SDKs (Dat
 Alpaca) at the start of that session before any integration code.
 
 — end Session 1 —
+
+---
+
+## SESSION 2 — Phase 1: Data Layer (Scanner + Market Data)
+
+**Date:** 2026-06-26
+**Status:** **DONE — D.** Ruff + mypy + pytest green (**121 passed, 3 Postgres-integration
+skipped**). Built directly on the Phase 0 contracts (`core.config`, `core.money`,
+`core.timeutils`, `db.models`, `adapters.base/providers`). See `Changelog.md` for the full list.
+
+### Web-verified this session (STANDING RULES A; June 2026)
+| Item | Verified fact | Source |
+|---|---|---|
+| alpaca-py | **0.43.4**; `StockHistoricalDataClient.get_stock_bars`; `StockDataStream(...feed=DataFeed.SIP)` + `subscribe_bars/_quotes/_trades`/`run`; `DataFeed{IEX,SIP,DELAYED_SIP,OTC,BOATS,OVERNIGHT}` — **SIP paid, IEX free**; paper `paper-api.alpaca.markets` | docs.alpaca.markets |
+| databento | **0.80.0**; `Live`/`Historical`; dataset `XNAS.ITCH`; schemas `mbp-10`/`mbo`/`trades`; env `DATABENTO_API_KEY`; metered | databento.com/docs |
+| SEC EDGAR | `companyconcept/CIK##########/dei/EntityCommonStockSharesOutstanding.json`; ticker→CIK `company_tickers.json` (pad 10); descriptive UA mandatory, ~10 req/s; **shares-outstanding ≠ free float** | sec.gov |
+| numpy/pandas | 2.5.0 / 3.0.3 exist & 3.13-ok — **not added**; indicators hand-rolled on `Decimal` (lean+deterministic); `pandas-ta` archive-risk, avoided | pypi.org |
+| Polygon→Massive | rebrand 2025-10; pkg `massive` 2.8.0 exposes `share_class_shares_outstanding` — noted as future free-float source, not wired | massive.com |
+
+### Decisions / fail-safes
+- **Bad float must not pass Pillar 2:** P2 requires float KNOWN + confidence ∈ {HIGH, MEDIUM} +
+  ≤ ceiling. EDGAR shares-outstanding = conservative upper-bound proxy (MEDIUM). Disagreement or
+  float > shares-out ⇒ LOW (blocked).
+- **RVOL low/unknown confidence can't pass Pillar 3** (thin baseline history).
+- **Tier A surveils unknown-float names; only Tier B is tradeable** (U1) — matches Session-0
+  discrepancy #6. Pillar boundaries normalized to §1 inclusive form (#5).
+- **Scanning requires SIP/consolidated** (`REQUIRE_SIP=true`); IEX-only/OTC/delayed rejected. Feed
+  gap ⇒ stale ⇒ do not trade (unseen key also = stale).
+- **Indicators are pure `Decimal`** (no float, no numpy/pandas) so batch == streaming bit-for-bit
+  and the §12 fixtures stay reproducible.
+- Vendor SDKs are an **optional `rossbot[vendors]` extra**, imported lazily; mypy
+  `ignore_missing_imports` for `alpaca.*`/`databento.*` so the lean test env stays green.
+
+### Open questions / carried forward
+- **NEEDS-VERIFY before live wiring** (flagged in `adapters/databento.py`): exact DBN record struct
+  (`Mbp10Msg.levels`, fixed-point price scale, Live-iteration API); Alpaca per-feed pre-market
+  coverage; vendor free-float field names. (Schemas/clients/auth/versions are verified.)
+- Postgres-only integration tests still skipped locally (no Docker) — exercised in CI; migration
+  `0002` re-seeds idempotently.
+- Two production-blocking client decisions still open: (1) data/broker vendor; (2) account
+  type/equity.
+
+### Next step
+Phase 2 — Strategy Engine (entry AND-gate E1–E7, label-agnostic patterns §4A, conviction scorer,
+exit engine P1–P8). **Outputs signals only.** Risk Manager (Phase 3) must exist & pass before any
+signal routes toward execution ("brakes before engine").
+
+— end Session 2 —
