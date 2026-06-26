@@ -36,6 +36,8 @@ from core.backtest.fill_model import MENTAL_STOP_LATENCY_SLIP
 from core.backtest.models import TradeRecord
 from core.backtest.sim_gate import SimulatorGate
 from core.config import ConfigService
+from core.execution.backstop import CatastrophicBackstop
+from core.execution.latency import LoopLatencyRecorder
 from core.live.capital_ramp import CapitalRamp
 from core.live.models import ReconcileResult
 from core.live.readiness import ReadinessChecker
@@ -99,6 +101,9 @@ class LiveSession:
         self._stop_event = asyncio.Event()
         self._frozen = False            # freeze: no new entries (feed/broker disconnect)
         self._last_bar_ts: datetime | None = None
+        # Phase 10: latency recorder + optional catastrophic backstop (§13.4)
+        self._latency = LoopLatencyRecorder(config)
+        self._backstop = CatastrophicBackstop(config)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -291,6 +296,13 @@ class LiveSession:
     async def _mental_stop_loop(self, poll_s: float) -> None:
         """Poll quotes and fire marketable-limit on mental-stop breach (U13).
 
+        Phase 10 hardens this loop with:
+        - LoopLatencyRecorder: measures each iteration wall-clock time; logs
+          WARN when above LATENCY_WARN_MS so the operator can tune LIVE_POLL_MS
+          or BACKSTOP_OFFSET (spec §13.4).
+        - CatastrophicBackstop: optional second internal mental stop far below
+          the primary level; fires marketable-limit — never a native STOP (U13).
+
         LIVE_POLL_MS default = 100ms (tighter than 500ms paper).
         Never routes a native STOP order (U13). spec §13.4.
         """
@@ -300,41 +312,58 @@ class LiveSession:
                 continue
             for symbol, pos in list(self._open.items()):
                 try:
-                    quote = await self._data.get_quote(symbol)
-                    snap = PositionSnapshot(
-                        symbol=symbol,
-                        entry_price=pos.entry_price,
-                        current_stop=pos.stop_price,
-                        target_price=pos.target_price,
-                        shares=pos.shares,
-                        entry_ts=pos.entry_ts,
-                        high_watermark=pos.high_watermark,
-                    )
-                    # Update watermark
-                    if quote.bid > pos.high_watermark:
-                        pos.high_watermark = quote.bid
+                    with self._latency.measure():
+                        quote = await self._data.get_quote(symbol)
+                        snap = PositionSnapshot(
+                            symbol=symbol,
+                            entry_price=pos.entry_price,
+                            current_stop=pos.stop_price,
+                            target_price=pos.target_price,
+                            shares=pos.shares,
+                            entry_ts=pos.entry_ts,
+                            high_watermark=pos.high_watermark,
+                        )
+                        # Update watermark
+                        if quote.bid > pos.high_watermark:
+                            pos.high_watermark = quote.bid
 
-                    if self._risk.check_mental_stop(quote.bid, snap):
-                        limit_price = max(
-                            quote.bid - MENTAL_STOP_LATENCY_SLIP,
-                            Decimal("0.01"),
+                        # Primary mental stop (U13 — no native STOP)
+                        primary_fired = self._risk.check_mental_stop(quote.bid, snap)
+
+                        # Catastrophic backstop (§13.4 — optional, same mechanism)
+                        backstop_fired = self._backstop.is_breached(
+                            quote.bid, pos.entry_price
                         )
-                        client_id = str(uuid.uuid4())
-                        ack = await self._broker.partial_sell(
-                            symbol, pos.shares, limit_price, client_order_id=client_id
-                        )
-                        if ack.accepted:
-                            self._risk.record_close(symbol, Decimal("0"))
-                            self._engine.close_position(symbol)
-                            del self._open[symbol]
-                            log.info(
-                                "live_session.mental_stop_fired",
-                                symbol=symbol,
-                                bid=str(quote.bid),
-                                limit=str(limit_price),
+
+                        if primary_fired or backstop_fired:
+                            limit_price = max(
+                                quote.bid - MENTAL_STOP_LATENCY_SLIP,
+                                Decimal("0.01"),
                             )
+                            client_id = str(uuid.uuid4())
+                            ack = await self._broker.partial_sell(
+                                symbol, pos.shares, limit_price, client_order_id=client_id
+                            )
+                            if ack.accepted:
+                                self._risk.record_close(symbol, Decimal("0"))
+                                self._engine.close_position(symbol)
+                                del self._open[symbol]
+                                log.info(
+                                    "live_session.mental_stop_fired",
+                                    symbol=symbol,
+                                    bid=str(quote.bid),
+                                    limit=str(limit_price),
+                                    primary=primary_fired,
+                                    backstop=backstop_fired,
+                                    latency_stats=self._latency.stats,
+                                )
                 except Exception as exc:  # noqa: BLE001
                     log.error("live_session.mental_stop_error", symbol=symbol, error=str(exc))
+
+    @property
+    def latency_stats(self) -> dict[str, float]:
+        """Return mental-stop loop latency stats (ms).  Recorded in PROGRESS.md §13.4."""
+        return self._latency.stats
 
     # ── EOD flatten (U3) ──────────────────────────────────────────────────────
 

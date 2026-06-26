@@ -25,6 +25,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from adapters.base import BarTick
 from adapters.providers import L2Signal
 from core.config import ConfigService
+from core.execution.bailout import has_higher_high_on_rising_volume
 from core.strategy.models import ExitReason, ExitSignal, PositionSnapshot, ScaleAction
 from core.strategy.patterns import is_topping_candle
 
@@ -81,18 +82,24 @@ def evaluate_exit(
         )
 
     # ── P2 — BREAKOUT-OR-BAILOUT (TIME STOP) ─────────────────────────────────
-    # IF price NOT advanced ≥ BAILOUT_MOVE within BAILOUT_SECONDS → sell_full().
-    # Proxy for "pulling away" / "hesitates" judgment (spec §3 P2 / §13.5).
+    # Spec §3 P2 / §13.5: unrealized < +BAILOUT_MOVE at T+BAILOUT_SECONDS
+    # AND no higher-highs on rising volume since entry → flatten.
+    # Phase 10 adds the higher-highs guard to protect slow-but-valid movers:
+    # if the stock IS grinding up (new high each bar with equal/rising volume),
+    # do NOT bail — only flatten when stalled with no momentum evidence.
     elapsed = (ts - position.entry_ts).total_seconds()
     if elapsed >= bailout_seconds and unrealized < bailout_move:
-        return ExitSignal(
-            symbol=symbol,
-            ts=ts,
-            reason=ExitReason.TIME_STOP,
-            action=ScaleAction.FULL_EXIT,
-            scale_fraction=Decimal("1.0"),
-            spec_ref="§3 P2",
-        )
+        # Filter bars to only those at or after entry
+        bars_since_entry = [b for b in prev_bars if b.ts >= position.entry_ts]
+        if not has_higher_high_on_rising_volume(bars_since_entry, position.entry_price):
+            return ExitSignal(
+                symbol=symbol,
+                ts=ts,
+                reason=ExitReason.TIME_STOP,
+                action=ScaleAction.FULL_EXIT,
+                scale_fraction=Decimal("1.0"),
+                spec_ref="§3 P2",
+            )
 
     # ── P3 — L2/TAPE REVERSAL ─────────────────────────────────────────────────
     # Large ask-seller / spoof / iceberg / red-tape burst → sell_full().
