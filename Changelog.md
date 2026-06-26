@@ -2,6 +2,141 @@
 
 All notable changes per CLAUDE.md §11.4. Format: reverse-chronological, one entry per phase/change.
 
+## [Phase 5] Dashboard & Monitoring — 2026-06-26
+
+Live read-only dashboard, FastAPI WebSocket push, kill-switch + pause controls, alerting, health
+monitors, post-session journal. U11 enforced — zero parameter editing mid-session. Minimalist
+monochrome design system (pure gray, zero hardcoded hex outside token file).
+
+### Added (Python — FastAPI layer)
+
+- **`api/auth.py`** — `require_api_key` dependency; reads `DASHBOARD_API_KEY` env var; raises 403 on
+  wrong key, 503 when key is not configured.
+
+- **`api/schemas/__init__.py`** — Package marker.
+
+- **`api/schemas/dashboard.py`** — All Pydantic v2 frozen response models: `OpenPosition`,
+  `RiskStateOut`, `WatchlistEntry`, `SignalEvent`, `RiskEventOut`, `FeedHealth`, `HealthOut`,
+  `JournalEntry`, `SessionJournal`, `DashboardStateOut`, `WsMessage`, `ControlResult`.
+
+- **`api/services/__init__.py`** — Package marker.
+
+- **`api/services/ws_manager.py`** — `ConnectionManager`; `asyncio.Lock`-protected connection list;
+  `broadcast_json` removes dead sockets; `connection_count` property.
+
+- **`api/services/state_service.py`** — `StateService`; in-memory ring buffers (signals 200,
+  risk_events 500 via `deque(maxlen=…)`); `register_risk_manager()`, `register_broker_cancel()`,
+  `halt_session()`, `pause()`, `resume()`, `get_state()`, `set_broadcast_hook()`.
+
+- **`api/services/alert_service.py`** — `AlertService`; `AlertSeverity` StrEnum (INFO/WARN/CRITICAL);
+  Slack via `urllib.request`, email via `smtplib`, both in `ThreadPoolExecutor` (never blocks event
+  loop); `async fire()` best-effort, never raises.
+
+- **`api/services/health_service.py`** — `HealthService`; `record_tick()`, `declare_feed()`,
+  `record_order_ack()`, `set_ws_clients()`; `refresh_clock_drift()` via ntplib in executor;
+  `build_health_snapshot()` → `HealthOut`; `FEED_STALE_SECONDS` env var (default 30s).
+
+- **`api/routers/__init__.py`** — Package marker.
+
+- **`api/routers/dashboard.py`** — Read-only GET endpoints: `/api/state`, `/api/watchlist`,
+  `/api/positions`, `/api/signals?limit=`, `/api/risk-events?limit=`, `/api/journal`.
+
+- **`api/routers/controls.py`** — U11-compliant POST-only controls (`require_api_key` dep on all):
+  `POST /controls/kill-switch`, `POST /controls/pause`, `POST /controls/resume`. Zero PATCH/PUT/DELETE.
+
+- **`api/routers/health.py`** — `GET /health/` (HealthOut), `GET /health/ready` (200 or 503).
+
+- **`api/main.py`** — Rewritten with `@asynccontextmanager lifespan`; instantiates all services;
+  wires `ws_manager.broadcast_json` as broadcast hook; CORSMiddleware GET+POST only; WebSocket
+  `/ws/live` (full state on connect, ping/pong loop); background `_health_loop` task.
+
+### Added (Python — tests)
+
+- **`tests/test_dashboard_api.py`** — Phase 5 acceptance tests: kill-switch invokes broker cancel;
+  no PATCH/PUT/DELETE routes; WebSocket sends initial `state_update`; only 3 POST routes exist
+  (no param mutation).
+
+- **`tests/test_alert_service.py`** — Unit tests: no-channels case, Slack webhook called with correct
+  URL, email dispatched via smtplib, severity injected into message, channel failure does not raise.
+
+- **`tests/test_ws_manager.py`** — Unit tests: connect appends, disconnect removes, broadcast reaches
+  all, dead connection (OSError) removed from pool.
+
+- **`tests/test_health_service.py`** — Unit tests: stale feed detection, live feed, `all_healthy`
+  false when stale, order ack latency recording, clock drift via ntplib mock.
+
+### Added (TypeScript — Next.js dashboard)
+
+- **`dashboard/package.json`** — Next.js 16.2, React 19.2, lightweight-charts v5, lucide-react
+  0.475, geist 1.3, Tailwind CSS v4 / @tailwindcss/postcss v4.3, TypeScript 5.7.
+
+- **`dashboard/next.config.ts`** — `reactStrictMode: true`; Turbopack default (Next 16).
+
+- **`dashboard/postcss.config.mjs`** — `@tailwindcss/postcss` only.
+
+- **`dashboard/tsconfig.json`** — Strict, `moduleResolution: "bundler"`, `@/*` path alias.
+
+- **`dashboard/app/globals.css`** — Full Minimalist design system: brand-50–900 gray scale,
+  background ramp, semantic role tokens (light + dark), `@theme inline` block wiring all CSS vars
+  to Tailwind utilities, full component CSS class library (`.card`, `.btn`, `.badge`, `.metric-card`,
+  `.nav-item`, `.table`, `.sidebar`, `.progress`, `.list`, etc.). Zero hardcoded hex outside `:root`
+  primitive definition.
+
+- **`dashboard/app/layout.tsx`** — Root layout; loads Geist (sans), Geist Mono, DM Serif Display via
+  `next/font`; sets `<html>` class vars.
+
+- **`dashboard/app/page.tsx`** — `redirect('/overview')`.
+
+- **`dashboard/app/(dashboard)/layout.tsx`** — Wraps children in `DashboardProvider` + `Sidebar`.
+
+- **`dashboard/app/(dashboard)/overview/page.tsx`** — Day P&L metrics grid, PnLChart
+  (lightweight-charts v5), open positions, signal feed, kill-switch + badge.
+
+- **`dashboard/app/(dashboard)/watchlist/page.tsx`** — Tier B (Five Pillars) + Tier A tables.
+
+- **`dashboard/app/(dashboard)/signals/page.tsx`** — Full signal buffer (last 200).
+
+- **`dashboard/app/(dashboard)/risk-events/page.tsx`** — Risk event log + CRITICAL/WARN counts.
+
+- **`dashboard/app/(dashboard)/journal/page.tsx`** — Post-session journal: all trades, total P&L,
+  win rate, max drawdown, spec refs per trade.
+
+- **`dashboard/app/(dashboard)/health/page.tsx`** — Feed liveness, clock drift, order ack latency,
+  WS client count.
+
+- **`dashboard/components/Sidebar.tsx`** — Navigation with live/halted status dot.
+
+- **`dashboard/components/Badge.tsx`** — Semantic badge variants (default/live/warn/success).
+
+- **`dashboard/components/MetricCard.tsx`** — KPI metric card with sentiment coloring.
+
+- **`dashboard/components/KillSwitch.tsx`** — Kill + Pause + Resume; U11 — no parameter editing.
+
+- **`dashboard/components/PnLChart.tsx`** — lightweight-charts v5 `addSeries()` line chart;
+  ResizeObserver for responsive layout; design-token colors from CSS vars.
+
+- **`dashboard/components/WatchlistTable.tsx`** — Tier A/B watchlist table with pillar badge.
+
+- **`dashboard/components/PositionsCard.tsx`** — Open positions with unrealised P&L coloring.
+
+- **`dashboard/components/SignalFeed.tsx`** — Signal activity list with action badge.
+
+- **`dashboard/components/RiskEventLog.tsx`** — Risk event log with severity badge.
+
+- **`dashboard/components/HealthMonitor.tsx`** — Feed status, latency, WS count list.
+
+- **`dashboard/hooks/useWebSocket.ts`** — WebSocket hook; 25s ping/pong keepalive; 3s auto-reconnect.
+
+- **`dashboard/hooks/useDashboardState.ts`** — `DashboardProvider` context + reducer; hydrates from
+  REST on mount; updates via WebSocket `state_update`, `signal`, `risk_event` messages.
+
+- **`dashboard/lib/types.ts`** — TypeScript interfaces mirroring all Python Pydantic schemas.
+
+- **`dashboard/lib/api.ts`** — Typed fetch wrapper; `NEXT_PUBLIC_API_URL` + `NEXT_PUBLIC_API_KEY`
+  env vars; all REST + control calls.
+
+---
+
 ## [Phase 4] Paper Trading & Backtesting — 2026-06-26
 
 Event-driven replay engine, conservative fill model, U6 simulator gate, live paper simulator,
