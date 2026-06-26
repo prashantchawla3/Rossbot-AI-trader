@@ -454,6 +454,70 @@ DEFAULTS: list[ConfigDefault] = [
         "§8/13.9",
         "Most conservative state; blocks EX1/EX2/mid-candle/oversize.",
     ),
+    # ==========================================================================
+    # PHASE 2 — Strategy Engine (entry gate, patterns, conviction, exit engine).
+    # Non-conflict operational numbers from spec §2/§3/§4A.
+    # ==========================================================================
+    # ---- E2: pullback candle constraints (spec §2 E2 / §4A) ----
+    ConfigDefault(
+        "PULLBACK_MAX_CANDLES",
+        "3",
+        ValueType.INT,
+        "entry",
+        "§2 E2/§4A",
+        "Maximum red-candle pullback count; 1–3 per spec (1–2 for micro-pullback).",
+    ),
+    ConfigDefault(
+        "SURGE_MIN_CANDLES",
+        "2",
+        ValueType.INT,
+        "entry",
+        "§2 E2/§4A",
+        "Minimum green surge bars required before a pullback is recognised.",
+    ),
+    # ---- P5: psyche-level step (spec §3 P5) ----
+    ConfigDefault(
+        "PSYCH_LEVEL_STEP",
+        "0.50",
+        ValueType.DECIMAL,
+        "exit",
+        "§3 P5",
+        "Step size for $0.50/$1.00 psyche-level detection in scale-out trigger.",
+    ),
+    ConfigDefault(
+        "PSYCH_LEVEL_TOLERANCE",
+        "0.03",
+        ValueType.DECIMAL,
+        "exit",
+        "§3 P5",
+        "Price tolerance (±$) around a psyche level for P5 trigger.",
+    ),
+    # ---- §4A Bull Flag consolidation range (spec §4A) ----
+    ConfigDefault(
+        "FLAG_CONSOLIDATION_MAX",
+        "0.25",
+        ValueType.DECIMAL,
+        "entry",
+        "§4A bull_flag",
+        "Max retrace for a tight bull-flag; should stay in top 15–25%% of pole.",
+    ),
+    # ---- §4A Light-volume breakout detector (spec §4A RKDA fixture) ----
+    ConfigDefault(
+        "LIGHT_VOLUME_RATIO",
+        "0.30",
+        ValueType.DECIMAL,
+        "entry",
+        "§4A RKDA",
+        "Breakout bar volume < this ratio of prior spike → suspicious (RKDA).",
+    ),
+    ConfigDefault(
+        "VOLUME_SPIKE_LOOKBACK",
+        "10",
+        ValueType.INT,
+        "entry",
+        "§4A RKDA",
+        "Lookback bars to locate the prior high-volume spike for light-vol check.",
+    ),
     # ======================================================================
     # PHASE 1 — Data layer (scanner / RVOL / feeds). Hard-rule operational
     # numbers from spec §1 (two-tier model), §9 (scanner defs), §2A. Not

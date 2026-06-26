@@ -283,3 +283,53 @@ exit engine P1–P8). **Outputs signals only.** Risk Manager (Phase 3) must exis
 signal routes toward execution ("brakes before engine").
 
 — end Session 2 —
+
+---
+
+## SESSION 3 — Phase 2: Strategy Engine (Signal Detection)
+
+**Date:** 2026-06-26
+**Status:** **DONE — D.** All tests green: **259 passed, 3 Postgres-integration skipped**.
+Built on top of Phase 0 + Phase 1 contracts. See `Changelog.md` for full list.
+
+### Deliverables built
+
+| File | What it does |
+|---|---|
+| `core/strategy/__init__.py` | Package marker |
+| `core/strategy/models.py` | All Phase 2 DTOs: `PatternType`, `PatternMatch`, `ExitReason`, `ScaleAction`, `PullbackContext`, `EntryGateResult`, `EntrySignal`, `PositionSnapshot`, `ExitSignal`, `FailedPatternSignal` |
+| `core/strategy/entry_gate.py` | E1–E7 AND-gate; `find_pullback_context`; fail-closed on MACD=None, L2=UNKNOWN |
+| `core/strategy/patterns.py` | 9 label-agnostic pattern recognisers (§4A); `is_failed_pattern` (RKDA / GMBL / universal); `is_topping_candle` |
+| `core/strategy/conviction.py` | Conviction scorer [0.25, 1.0]: pattern rank 30%, RVOL 25%, float 15%, attention 15%, spread 8%, retrace 7%; EMA-touch + VWAP-reclaim bonuses |
+| `core/strategy/exit_engine.py` | P1–P8 exit rules in priority order; `_at_psych_level`; topping tail confirmed by NEXT candle |
+| `core/strategy/engine.py` | `StrategyEngine` + `SymbolState`; 10s bars update indicators only; 1m bars drive entry/exit |
+| `core/config.py` | Added Phase 2 config keys: `PULLBACK_MAX_CANDLES`, `SURGE_MIN_CANDLES`, `PSYCH_LEVEL_STEP/TOLERANCE`, `FLAG_CONSOLIDATION_MAX`, `LIGHT_VOLUME_RATIO`, `VOLUME_SPIKE_LOOKBACK` |
+| `tests/test_entry_gate.py` | 30 tests: each E-gate pass + fail; MACD hard-block; spread=0.01 skip; mid-candle gated to HOT |
+| `tests/test_patterns.py` | Pattern unit tests: ABCD P2<P1 void; topping-tail confirmation; RKDA light-volume; all 9 patterns |
+| `tests/test_conviction.py` | Conviction scorer: clamp, pattern rank ordering, RVOL/float/attention/spread/retrace sensitivity, bonuses |
+| `tests/test_exit_engine.py` | Exit engine P1–P8: each fires + doesn't fire; priority order (P1 beats P2 beats P3…); P4 requires confirmation |
+| `tests/test_strategy_fixtures.py` | §12 regression fixtures: SLXN-style WIN generates `EntrySignal`; RKDA/GMBL/PALI losses generate NO `EntrySignal`; U3 no-overnight reset; 10s bars silent |
+
+### Key design decisions
+
+- **E6 fail-closed on UNKNOWN L2** (stub default `L2Signal.UNKNOWN` → E6 vetoes) — this is also how GMBL and RKDA fixture losses are blocked: L2=ICEBERG or L2=UNKNOWN fails E6 → gate fails → only `FailedPatternSignal` possible.
+- **Topping tail P4** confirmed by the NEXT candle making a new low (spec §3 P4 [V2]). A single topping candle alone does NOT fire exit.
+- **ABCD invariant: P2 ≥ P1** (higher low). `is_abcd` returns None if `pullback_low < p1_low` (stair-stepping down, spec §4A).
+- **Volume comparisons stay in plain float/int** — never mix volume (int) with Decimal arithmetic. Prices/PnL/sizing stay Decimal everywhere.
+- **MACD needs 34 bars** (26 slow EMA + 9 signal EMA - 1) before `histogram != None`. Integration tests pre-warm the engine with 36 rising bars before the signal sequence.
+- **Mid-candle entry trigger forced to candle_close** unless `market_state == HOT` (spec C12).
+- **`find_pullback_context` minimum bar count** = `surge_min_candles(2) + pullback_max_candles(3) + 1 = 6`.
+
+### Bug fixed in production code
+- `patterns.py`: `avg_vol * Decimal("3")` where `avg_vol` was Python `float` → `TypeError`. Fixed all volume arithmetic to use pure float/int (volumes are ints; only prices use Decimal).
+
+### Open questions / carried forward
+- Two production-blocking client decisions still open (data/broker vendor; account type/equity).
+- Phase 3 (Risk Manager) must exist before any signal reaches the execution path ("brakes before engine"). **No signal routes to the broker in Phase 2.**
+- `signals` table in `db.models` exists (SignalRow) but `StrategyEngine` does not yet persist signals there — that write-path belongs in Phase 3 (Risk Manager) or Phase 4 (Execution).
+
+### Next step
+**Phase 3 — Risk Management Layer** (mandatory veto gate, sizing engine, all U1–U15 guardrails).
+No execution code is built until Phase 3 exists and all risk-gate tests pass.
+
+— end Session 3 —

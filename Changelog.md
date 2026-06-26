@@ -2,6 +2,88 @@
 
 All notable changes per CLAUDE.md §11.4. Format: reverse-chronological, one entry per phase/change.
 
+## [Phase 2] Strategy Engine (Signal Detection) — 2026-06-26
+
+Entry AND-gate, label-agnostic pattern recognisers, conviction scorer, exit engine.
+**Outputs signals only — nothing routes to the broker.** Phase 3 Risk Manager must exist before
+any signal reaches the execution path ("brakes before engine"). 259 passing / 3 skipped.
+
+### Added
+
+- **`core/strategy/models.py`** — All Phase 2 DTOs: `PatternType` (9 patterns + NONE),
+  `PATTERN_RANK` dict, `ExitReason`, `ScaleAction`, `PullbackContext`, `EntryGateResult`,
+  `EntrySignal` (with `rr_ratio`/`risk_per_share` properties), `PositionSnapshot` (immutable;
+  high-watermark updated by creating new snapshot), `ExitSignal`, `FailedPatternSignal`.
+  All frozen Pydantic models. Money fields are `Decimal`; no float.
+
+- **`core/strategy/entry_gate.py`** — Pure E1–E7 AND-gate:
+  - E1 tier_b_pass; E2 1–3 red pullback; E3 candle-over-candle new high;
+    E4 MACD positive (hard-block on None); E5 retrace ≤ RETRACE_MAX (C9);
+    E6 L2 SUPPORT or ABSORB_BREAK (UNKNOWN/ICEBERG/SPOOF → fail-closed);
+    E7 spread ∈ [SPREAD_MIN, SPREAD_MAX].
+  - `find_pullback_context`: scans backward from bars[-2]; minimum 6 bars.
+  - `ENTRY_TRIGGER` forced to `candle_close` unless `market_state = HOT` (spec C12).
+
+- **`core/strategy/patterns.py`** — 9 label-agnostic pattern recognisers (spec §4A):
+  - `is_micro_pullback` (R1), `is_abcd` (R2, P2≥P1 invariant), `is_bull_flag` (R3),
+    `is_flat_top` (R3 variant), `is_gap_and_go` (R5), `is_vwap_break` (R6),
+    `is_halt_resumption` (R7), `is_red_to_green` (R10), `is_reverse_split_squeeze` (R11).
+  - `is_topping_candle`: upper shadow ≥ 2× body (or doji).
+  - `is_failed_pattern`: universal §4A invalidation set — topping-tail confirmed by next candle
+    new low, false-breakout-flush, candle-under-candle, below 9-EMA, below VWAP, MACD negative
+    cross, retrace > 50%, light-volume breakout after spike (RKDA fixture).
+  - `recognize_pattern`: returns highest-priority match (lowest PATTERN_RANK value).
+  - **Bug fixed**: volume arithmetic was mixing Python `float` with `Decimal` → `TypeError`.
+    All volume comparisons now use plain float/int; only prices/PnL use Decimal.
+
+- **`core/strategy/conviction.py`** — Conviction scorer [0.25, 1.0]:
+  pattern 30% + RVOL 25% + float 15% + attention 15% + spread 8% + retrace 7%.
+  Bonuses: 9-EMA touch +0.05, VWAP reclaim +0.03. Clamped to [0.25, 1.0].
+
+- **`core/strategy/exit_engine.py`** — P1–P8 in priority order (first match wins):
+  P1 hard stop (mental/marketable-limit, U13); P2 breakout-or-bailout (+10¢/60s);
+  P3 L2 reversal (SPOOF/ICEBERG); P4 topping tail **confirmed** by next candle new low;
+  P5 scale into strength (HOD break or $0.50/$1.00 psych level) → PARTIAL_SCALE + move-to-BE;
+  P6 first red close; P7 VWAP guard; P8 lost popularity. No native STOP ever (U13).
+
+- **`core/strategy/engine.py`** — `StrategyEngine` + `SymbolState`:
+  - 10s bars update indicators + `intraday_high` only; no signals generated.
+  - 1m bars drive entry gate → pattern → conviction → `EntrySignal`.
+  - When gate fails + pullback_ctx exists → `is_failed_pattern` → `FailedPatternSignal`.
+  - `reset_session` clears all per-session state including position (U3 no-overnight).
+  - `open_position`/`close_position`/`update_stop`/`set_halted_resume`/`set_market_rank`
+    lifecycle callbacks called by the (future) Risk + Execution layers.
+
+- **Config additions** (`core/config.py`): `PULLBACK_MAX_CANDLES` (3), `SURGE_MIN_CANDLES` (2),
+  `PSYCH_LEVEL_STEP` (0.50), `PSYCH_LEVEL_TOLERANCE` (0.03), `FLAG_CONSOLIDATION_MAX` (0.25),
+  `LIGHT_VOLUME_RATIO` (0.30), `VOLUME_SPIKE_LOOKBACK` (10).
+
+- **Tests** (138 new; 259 passing + 3 Postgres skipped):
+  - `tests/test_entry_gate.py` (30): E1–E7 pass + fail; MACD hard-block; spread=0.01 skip;
+    find_pullback_context geometry; mid-candle gated to HOT.
+  - `tests/test_patterns.py` (38): all 9 patterns; ABCD P2<P1 void; topping-tail confirmation
+    (single candle alone = NOT a failure; needs next-candle confirmation); RKDA
+    light-volume-after-spike; all `is_failed_pattern` conditions.
+  - `tests/test_conviction.py` (18): clamp; pattern rank ordering; RVOL/float/attention/spread/
+    retrace sensitivity; bonuses stack correctly.
+  - `tests/test_exit_engine.py` (22): P1–P8 each fires + does not fire; priority ordering
+    (P1 > P2 > P3…); P4 topping-tail requires next-candle confirmation; P5 PARTIAL_SCALE.
+  - `tests/test_strategy_fixtures.py` (30): §12 regression fixtures — SLXN-style WIN generates
+    `EntrySignal` (MACD pre-warmed 36 bars); RKDA loss (L2=UNKNOWN → E6 fails → no entry);
+    GMBL loss (L2=ICEBERG → E6 fails → no entry); PALI loss (secondary-offering → tier_b=False →
+    E1 fails → no entry); U3 reset clears position; 10s bars return no signals.
+
+### Notes
+- Signals land in `EntrySignal` / `ExitSignal` / `FailedPatternSignal` objects only.
+  The `signals` DB table (`SignalRow`) is not yet written to by the engine — that write-path
+  belongs in Phase 3 (Risk Manager) once the veto gate exists.
+- MACD(12,26,9) requires 34 bars minimum before histogram is non-None. Integration tests
+  pre-warm with 36 bars of rising price to ensure E4 passes in fixture tests.
+- **`is_abcd`**: the actual H1 level is computed geometrically by `_find_abcd_structure`
+  from the bar history — it does NOT use `ctx.surge_high`.
+
+---
+
 ## [Phase 1] Data Layer (Scanner + Market Data) — 2026-06-26
 
 Real-time/historical data plumbing: two-tier scanner, indicators, RVOL, float resolver, feed
