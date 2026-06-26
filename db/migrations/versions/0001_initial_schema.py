@@ -37,9 +37,14 @@ def _is_postgres(bind: sa.engine.Connection) -> bool:
 
 
 def _timescale_available(bind: sa.engine.Connection) -> bool:
-    """Try to enable TimescaleDB; return whether it is usable."""
+    """Try to enable TimescaleDB; return whether it is usable.
+
+    Uses a savepoint so a failed CREATE EXTENSION rolls back cleanly without
+    aborting the outer transaction (plain postgres:17 has no timescaledb).
+    """
     try:
-        bind.execute(sa.text("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE"))
+        with bind.begin_nested():  # SAVEPOINT
+            bind.execute(sa.text("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE"))
         return True
     except Exception:
         return False
