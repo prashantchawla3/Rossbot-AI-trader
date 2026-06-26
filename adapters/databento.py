@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from adapters.base import BarTick, DepthTick, MarketDataAdapter, NewsItem, QuoteTick, TapeTick
+from adapters.base import BarTick, DepthTick, MarketDataAdapter, NewsItem, QuoteTick, Side, TapeTick
 
 DATASET_TOTALVIEW = "XNAS.ITCH"
 SCHEMA_DEPTH = "mbp-10"
@@ -95,11 +95,23 @@ class DatabentoDepthTapeAdapter(MarketDataAdapter):
 
     async def subscribe_tape(self, symbols: Sequence[str]) -> AsyncIterator[TapeTick]:
         async for rec in self._records(SCHEMA_TAPE, symbols):
+            # Databento trades schema: side = aggressor side char.
+            # 'A' = ask aggressor (buyer lifted offer) = BUY (green print).
+            # 'B' = bid aggressor (seller hit bid) = SELL (red print).
+            # 'N' or absent = unknown. NEEDS-VERIFY field name per SDK version.
+            raw_side = getattr(rec, "side", None)
+            if raw_side == "A":
+                side: Side | None = Side.BUY
+            elif raw_side == "B":
+                side = Side.SELL
+            else:
+                side = None
             yield TapeTick(
                 symbol=str(getattr(rec, "symbol", "")),
                 ts=_utc_from_ns(rec.ts_event),
                 price=_px(rec.price),
                 size=int(rec.size),
+                side=side,
             )
 
     # ---- not provided by this adapter (use Alpaca) ----------------------

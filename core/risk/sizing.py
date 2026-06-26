@@ -103,4 +103,37 @@ def compute_size(
     return max(0, raw)
 
 
-__all__ = ["compute_size"]
+def compute_adv_liquidity_cap(adv_shares: int, cfg: ConfigService) -> int:
+    """Return max shares allowed based on ADV cap. spec §13.6 / Phase 12.
+
+    Caps order at ADV_CAP_FRACTION (default 1%) of the symbol's average daily volume
+    to prevent becoming a significant fraction of daily trade flow (TRNR/ESTR risk).
+    """
+    if adv_shares <= 0:
+        return 0
+    frac = cfg.get_decimal("ADV_CAP_FRACTION")
+    return max(1, int((Decimal(adv_shares) * frac).to_integral_value(ROUND_DOWN)))
+
+
+def compute_depth_cap(
+    depth_asks: list[tuple[Decimal, int]],
+    cfg: ConfigService,
+) -> int:
+    """Return max shares allowed based on displayed ask-side book depth. spec §13.6 / U9.
+
+    Aggregates the top DEPTH_CAP_LEVELS ask levels and applies LIQUIDITY_CAP_FRACTION
+    so no single order represents more than that fraction of visible sell-side liquidity.
+    ``depth_asks`` should be sorted by price ascending (best ask first).
+    """
+    levels = cfg.get_int("DEPTH_CAP_LEVELS")
+    frac = cfg.get_decimal("LIQUIDITY_CAP_FRACTION")
+    top_levels = depth_asks[:levels]
+    if not top_levels:
+        return 0
+    total_displayed = sum(size for _, size in top_levels)
+    if total_displayed <= 0:
+        return 0
+    return max(1, int((Decimal(total_displayed) * frac).to_integral_value(ROUND_DOWN)))
+
+
+__all__ = ["compute_adv_liquidity_cap", "compute_depth_cap", "compute_size"]
