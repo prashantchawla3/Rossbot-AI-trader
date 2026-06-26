@@ -386,3 +386,92 @@ as full end-to-end pass/fail, paper simulator, and U6 gate (≥10 sim days @ ≥
 No live capital until U6 is satisfied and the client decisions are resolved.
 
 — end Session 4 —
+
+---
+
+## SESSION 5 — Phase 5: Dashboard & Monitoring
+
+**Date:** 2026-06-26
+**Status:** **DONE — D.** 483+ tests passing (Phase 0–4 baseline) + new Phase 5 test suite.
+
+### Deliverables built
+
+#### FastAPI layer (Python)
+
+| File | What it does |
+|---|---|
+| `api/auth.py` | `require_api_key` — X-API-Key header dep; raises 403/503 |
+| `api/schemas/__init__.py` | Package marker |
+| `api/schemas/dashboard.py` | All frozen Pydantic response models: `OpenPosition`, `RiskStateOut`, `WatchlistEntry`, `SignalEvent`, `RiskEventOut`, `FeedHealth`, `HealthOut`, `JournalEntry`, `SessionJournal`, `DashboardStateOut`, `WsMessage`, `ControlResult` |
+| `api/services/__init__.py` | Package marker |
+| `api/services/ws_manager.py` | `ConnectionManager` — async broadcast + dead-connection cleanup |
+| `api/services/state_service.py` | `StateService` — in-memory ring buffers (signals 200, risk_events 500); bridges trading engine → dashboard API |
+| `api/services/alert_service.py` | `AlertService` — Slack webhook (urllib) + SMTP (smtplib) in ThreadPoolExecutor; never blocks event loop |
+| `api/services/health_service.py` | `HealthService` — feed liveness, clock drift (ntplib), order ack latency, WS client count |
+| `api/routers/__init__.py` | Package marker |
+| `api/routers/dashboard.py` | Read-only GET endpoints: `/api/state`, `/api/watchlist`, `/api/positions`, `/api/signals`, `/api/risk-events`, `/api/journal` |
+| `api/routers/controls.py` | U11-compliant POST-only controls: `/controls/kill-switch`, `/controls/pause`, `/controls/resume` — NO parameter editing |
+| `api/routers/health.py` | `/health/` + `/health/ready` |
+| `api/main.py` | Rewritten — lifespan context manager, CORS (GET+POST only), WebSocket `/ws/live`, background health loop |
+
+#### Tests
+
+| File | What it tests |
+|---|---|
+| `tests/test_dashboard_api.py` | Kill-switch flattens via adapter; no PATCH/PUT/DELETE routes; WebSocket pushes state; no mid-session param mutation |
+| `tests/test_alert_service.py` | No-channels case, Slack webhook call, email dispatch, severity in message, failure tolerance |
+| `tests/test_ws_manager.py` | Connect/disconnect, broadcast, dead-connection removal |
+| `tests/test_health_service.py` | Stale feeds, live feeds, `all_healthy`, order ack latency, clock drift |
+
+#### Next.js dashboard (TypeScript)
+
+| File | What it does |
+|---|---|
+| `dashboard/package.json` | Next.js 16.2, React 19.2, lightweight-charts v5, lucide-react, geist, Tailwind v4 |
+| `dashboard/next.config.ts` | Strict mode, Turbopack default |
+| `dashboard/postcss.config.mjs` | `@tailwindcss/postcss` plugin only |
+| `dashboard/tsconfig.json` | Strict, bundler moduleResolution, `@/*` alias |
+| `dashboard/app/globals.css` | Full Minimalist design system — all CSS tokens, Tailwind v4 `@theme inline`, component CSS classes |
+| `dashboard/app/layout.tsx` | Root layout — Geist, Geist Mono, DM Serif Display fonts |
+| `dashboard/app/page.tsx` | Redirect → /overview |
+| `dashboard/app/(dashboard)/layout.tsx` | DashboardProvider + Sidebar + `<main>` |
+| `dashboard/app/(dashboard)/overview/page.tsx` | P&L metrics, PnLChart, positions, signal feed, kill-switch |
+| `dashboard/app/(dashboard)/watchlist/page.tsx` | Tier A + Tier B tables |
+| `dashboard/app/(dashboard)/signals/page.tsx` | Full signal buffer (200) |
+| `dashboard/app/(dashboard)/risk-events/page.tsx` | Full risk event log (500) + severity counts |
+| `dashboard/app/(dashboard)/journal/page.tsx` | Post-session trade journal with all fills |
+| `dashboard/app/(dashboard)/health/page.tsx` | Feed liveness, clock drift, order latency |
+| `dashboard/components/Sidebar.tsx` | Navigation + live/halted status dot |
+| `dashboard/components/Badge.tsx` | Semantic badge (default / live / warn / success) |
+| `dashboard/components/MetricCard.tsx` | KPI card with sentiment coloring |
+| `dashboard/components/KillSwitch.tsx` | Kill + Pause + Resume controls (U11 — no param editing) |
+| `dashboard/components/PnLChart.tsx` | lightweight-charts v5 line chart |
+| `dashboard/components/WatchlistTable.tsx` | Tier A/B table with pillar badge |
+| `dashboard/components/PositionsCard.tsx` | Open positions table |
+| `dashboard/components/SignalFeed.tsx` | Signal activity list |
+| `dashboard/components/RiskEventLog.tsx` | Risk event activity list |
+| `dashboard/components/HealthMonitor.tsx` | Feed + latency status list |
+| `dashboard/hooks/useWebSocket.ts` | WebSocket hook — ping/pong keepalive, auto-reconnect |
+| `dashboard/hooks/useDashboardState.ts` | React context + reducer; WebSocket + REST polling |
+| `dashboard/lib/types.ts` | TypeScript types mirroring Python schemas |
+| `dashboard/lib/api.ts` | Typed fetch wrapper for all REST + control endpoints |
+
+### Key design decisions
+
+- **U11 enforced at the router layer** — `controls.py` only exposes POST /kill-switch, /pause, /resume. Zero PATCH/PUT/DELETE routes exist anywhere. Confirmed by acceptance test `test_no_patch_or_put_routes_exist`.
+- **Stdlib-only alerting** — `urllib.request` (Slack) + `smtplib` (email) in `ThreadPoolExecutor`. No new runtime deps (`aiosmtplib`, `httpx`) added.
+- **Monochrome design system** — `colors_and_type.css` is pure gray (not blue as README prose says). CSS/JSON token files win over prose per spec. Only non-neutral semantic tokens: `--success` green and `--destructive` red.
+- **Ring buffers cap memory** — signals deque(maxlen=200), risk_events deque(maxlen=500). Client-side state mirrors same limits.
+- **State bridge** — `StateService` is the in-process cache; trading engine calls `record_signal()`, `record_risk_event()`, `update_positions()`; dashboard routers read from it. WebSocket pushes state diff on each tick.
+- **No font file bundled** — DM Serif Display declared as `localFont` fallback; user must supply `public/fonts/DMSerifDisplay-Regular.woff2` or swap for a Google Fonts import. Geist + Geist Mono come from the `geist` npm package.
+
+### Open questions / carried forward
+- Two production-blocking client decisions still open: (1) data/broker vendor; (2) account type/equity.
+- DM Serif Display font file must be sourced and placed at `dashboard/public/fonts/DMSerifDisplay-Regular.woff2`.
+- `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_WS_URL` env vars must be set before `npm run build` (defaults: localhost:8000).
+- Dashboard `npm install` and `npm run build` not yet run — package-level CI gate for Next.js is Phase 5's outstanding step before merging.
+
+### Next step
+**Phase 6 (Execution layer)**: limit-only order routing, mental-stop monitor (U13), scale-outs, marketable-limit on breach, EOD flatten. Requires broker adapter vendor decision first.
+
+— end Session 5 —
