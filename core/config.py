@@ -723,6 +723,140 @@ DEFAULTS: list[ConfigDefault] = [
         "§10",
         "Default feed-gap threshold; exceeding it trips staleness → do not trade.",
     ),
+    # ==========================================================================
+    # PHASE 6 — Live Trading (hardened execution path, capital ramp, readiness).
+    # spec §5/§6/§13.4/ROSSBOT_PROJECT_PLAN.md Phase 6.
+    # ==========================================================================
+    # ---- Mental-stop monitor poll interval in live mode (§13.4) ----
+    ConfigDefault(
+        "LIVE_POLL_MS",
+        "100",
+        ValueType.INT,
+        "execution",
+        "§13.4/Phase6",
+        "Mental-stop monitor poll interval (ms) in live mode; tighter than 500ms paper.",
+    ),
+    # ---- Broker position reconciliation (Phase 6) ----
+    ConfigDefault(
+        "RECONCILE_INTERVAL_S",
+        "30",
+        ValueType.INT,
+        "execution",
+        "Phase6",
+        "Interval (seconds) between broker position reconciliation checks.",
+    ),
+    # ---- Disconnect / recovery (Phase 6) ----
+    ConfigDefault(
+        "RECONNECT_MAX_ATTEMPTS",
+        "3",
+        ValueType.INT,
+        "execution",
+        "Phase6",
+        "Max reconnect attempts on broker/data-feed disconnect before flatten+halt.",
+    ),
+    ConfigDefault(
+        "RECONNECT_DELAY_S",
+        "5",
+        ValueType.INT,
+        "execution",
+        "Phase6",
+        "Delay (seconds) between reconnection attempts after disconnect.",
+    ),
+    # ---- Staged capital ramp (spec §5/§6) ----
+    ConfigDefault(
+        "CAPITAL_RAMP_TIER",
+        "MICRO",
+        ValueType.STR,
+        "sizing",
+        "§5/§6/Phase6",
+        "Staged ramp tier: MICRO (first live days) | STARTER | FULL. Promoted manually.",
+    ),
+    ConfigDefault(
+        "CAPITAL_RAMP_MICRO_SHARES",
+        "100",
+        ValueType.INT,
+        "sizing",
+        "§5/§6/Phase6",
+        "Absolute max shares per trade in MICRO tier (first live days, tiny size).",
+    ),
+    ConfigDefault(
+        "CAPITAL_RAMP_STARTER_SHARES",
+        "2000",
+        ValueType.INT,
+        "sizing",
+        "§5/§6/Phase6",
+        "Absolute max shares per trade in STARTER tier (before full risk_formula).",
+    ),
+    # ---- Pre-market readiness gates (Phase 6) ----
+    ConfigDefault(
+        "READINESS_MIN_BUYING_POWER",
+        "5000.00",
+        ValueType.DECIMAL,
+        "account",
+        "Phase6",
+        "Minimum buying power (USD) required at session start (readiness gate).",
+    ),
+    ConfigDefault(
+        "READINESS_MIN_EQUITY",
+        "25000.00",
+        ValueType.DECIMAL,
+        "account",
+        "§13.11/Phase6",
+        "Minimum equity for non-PDT margin trading ($25k Pattern Day Trader threshold).",
+    ),
+    ConfigDefault(
+        "CLOCK_DRIFT_MAX_MS",
+        "500",
+        ValueType.INT,
+        "timing",
+        "Phase6",
+        "Maximum acceptable NTP clock drift (ms) before readiness check fails.",
+    ),
+    # ==========================================================================
+    # PHASE 7 — Catalyst Detection (spec §1/§13.1).
+    # NLP news classifier + reaction-proof gate + SEC dilution check.
+    # Env vars for secrets: BENZINGA_API_KEY, ANTHROPIC_API_KEY (never in DB).
+    # ==========================================================================
+    ConfigDefault(
+        "CATALYST_LLM_ENABLED",
+        "true",
+        ValueType.BOOL,
+        "catalyst",
+        "§1/§13.1/Phase7",
+        "Enable Claude LLM for catalyst tag classification; false = keyword+filing only.",
+    ),
+    ConfigDefault(
+        "CATALYST_LLM_MODEL",
+        "claude-haiku-4-5-20251001",
+        ValueType.STR,
+        "catalyst",
+        "§1/§13.1/Phase7",
+        "Claude model ID for catalyst classification (Haiku 4.5: $1/$5 per MTok I/O).",
+    ),
+    ConfigDefault(
+        "CATALYST_CONFIDENCE_THRESHOLD",
+        "0.70",
+        ValueType.DECIMAL,
+        "catalyst",
+        "§1/§13.1/Phase7",
+        "Minimum LLM confidence to return VERIFIED; below threshold → UNVERIFIED.",
+    ),
+    ConfigDefault(
+        "CATALYST_FILING_LOOKBACK_DAYS",
+        "30",
+        ValueType.INT,
+        "catalyst",
+        "§1/§13.1/Phase7",
+        "Days back to check EDGAR submissions for dilution filings (S-1/S-3/424B).",
+    ),
+    ConfigDefault(
+        "CATALYST_MAX_HEADLINES",
+        "5",
+        ValueType.INT,
+        "catalyst",
+        "§1/§13.1/Phase7",
+        "Max headlines to fetch and pass to the LLM classifier (cost control).",
+    ),
 ]
 
 # Conflict keys (C1–C16) for validation/audit — every one must be present in the table.

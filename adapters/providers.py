@@ -13,6 +13,7 @@ permissive value (Rule C).
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from decimal import Decimal
 from enum import StrEnum
 
 
@@ -46,8 +47,19 @@ class CatalystProvider(ABC):
     """Classifies whether a symbol has a real, tradable catalyst (Pillar 5)."""
 
     @abstractmethod
-    async def classify(self, symbol: str) -> CatalystVerdict:
-        """Return the catalyst verdict. Bias to UNVERIFIED/SKIP on ambiguity (§13.1)."""
+    async def classify(
+        self,
+        symbol: str,
+        *,
+        rvol: Decimal | None = None,
+        roc_pct: Decimal | None = None,
+    ) -> CatalystVerdict:
+        """Return the catalyst verdict. Bias to UNVERIFIED/SKIP on ambiguity (§13.1).
+
+        Optional keyword args supply market reaction data for the reaction-proof gate
+        (spec §13.1 REAL_CATALYST: rvol ≥ 5× AND roc_pct ≥ 10%). If not provided
+        the implementation trusts the scanner already verified Pillars 3 and 4.
+        """
 
 
 class L2SignalProvider(ABC):

@@ -2,6 +2,179 @@
 
 All notable changes per CLAUDE.md §11.4. Format: reverse-chronological, one entry per phase/change.
 
+## [Phase 7] Catalyst Detection — 2026-06-26
+
+Replaced `StubCatalystProvider` (always UNVERIFIED) with `NLPCatalystProvider` — a real
+layered classifier. Defence-in-depth: reaction-proof gate → SEC EDGAR dilution check →
+Benzinga headline fetch → keyword SKIP scan → Claude Haiku 4.5 LLM tagging.
+Hard-blocks PALI (secondary offering) and PTPI (buyout). Biases to UNVERIFIED/SKIP on ambiguity.
+
+### Added (Python — catalyst detection)
+
+- **`adapters/catalyst/__init__.py`** — Package marker; re-exports `CatalystResult`,
+  `CatalystTag`, `NewsItem`, `NLPCatalystProvider`.
+
+- **`adapters/catalyst/models.py`** — `CatalystTag` StrEnum (12 accepted + 7 SKIP + unknown);
+  `ACCEPTED_TAGS`/`SKIP_TAGS` frozensets; `NewsItem` frozen dataclass (headline, body, url,
+  source, published_at); `CatalystResult` frozen dataclass (tag, confidence, reasoning, source).
+
+- **`adapters/catalyst/keyword_filter.py`** — `scan_for_skip(text)` instant substring SKIP
+  detector. No API call. Covers: buyout/acquisition (SKIP_1), secondary/shelf offering (SKIP_3),
+  pump/newsletter (SKIP_4), 5-cent tick pilot (SKIP_6). Bias: conservative — only clear-signal
+  phrases matched.
+
+- **`adapters/catalyst/sec_filing.py`** — `SecFilingClient` checks EDGAR submissions API
+  (free, no key: `data.sec.gov/submissions/CIK###.json`) for recent S-1/S-3/424B* filings
+  (dilution → SKIP) and 13D/13G (accepted catalyst). Reuses `parse_ticker_map` from
+  `adapters/edgar.py`. CIK map cached across calls. Fail-safe: network error → False (no
+  false-SKIP).
+
+- **`adapters/catalyst/benzinga_feed.py`** — `BenzingaNewsClient` fetches recent headlines
+  via `https://api.benzinga.com/api/v2/news`. Auth via `BENZINGA_API_KEY` env var (secret —
+  never stored in DB). `updatedSince` delta polling. Falls back to [] on any error (fail-safe).
+  Network I/O injectable for offline tests.
+
+- **`adapters/catalyst/llm_classifier.py`** — `LLMCatalystClassifier` zero-shot structured
+  JSON output via Claude Haiku 4.5 (`claude-haiku-4-5-20251001`; $1/$5 per MTok I/O,
+  ≈$0.001/call verified 2026-06-26). Injected `client` param for offline tests. Falls back to
+  `CatalystResult(UNKNOWN, 0)` on missing key, API error, or malformed JSON. Strips markdown
+  fences from response.
+
+- **`adapters/catalyst/provider.py`** — `NLPCatalystProvider` orchestrates all 5 layers.
+  Accepts optional `rvol` / `roc_pct` kwargs for the reaction-proof gate (spec §13.1
+  REAL_CATALYST ≥10% + ≥5×). All sub-components injectable. Async with `asyncio.to_thread`
+  for sync I/O (urllib / Anthropic SDK).
+
+- **`core/config.py`** — +5 Phase 7 config keys: `CATALYST_LLM_ENABLED` (true),
+  `CATALYST_LLM_MODEL` ("claude-haiku-4-5-20251001"), `CATALYST_CONFIDENCE_THRESHOLD` (0.70),
+  `CATALYST_FILING_LOOKBACK_DAYS` (30), `CATALYST_MAX_HEADLINES` (5).
+
+### Modified
+
+- **`adapters/providers.py`** — `CatalystProvider.classify` extended with keyword-only
+  `rvol: Decimal | None = None` and `roc_pct: Decimal | None = None` args (backward-compatible;
+  existing callers unaffected). Added `from decimal import Decimal` import.
+
+- **`adapters/stubs.py`** — `StubCatalystProvider.classify` updated to accept new kwargs
+  (still returns UNVERIFIED — Rule C unchanged).
+
+### Tests (66 new, all passing)
+
+- `tests/test_catalyst_keyword.py` — 23 tests: parametrized SKIP phrase hits for
+  buyout/secondary/pump/5c-tick; parametrized no-hit for accepted catalysts; case-insensitive;
+  first-match determinism.
+- `tests/test_catalyst_sec_filing.py` — 13 tests: `_has_recent_filing` unit tests (S-3/424B3
+  detect, old filing excluded, 8-K excluded, empty, bad JSON); `SecFilingClient` integration
+  tests (PALI dilution, no filing, unknown ticker, network error, stake filing, UA validation,
+  CIK map caching).
+- `tests/test_catalyst_llm.py` — 13 tests: PTPI/PALI SKIP classification; FDA/earnings VERIFIED;
+  low confidence preserved; UNKNOWN for ambiguous; error paths (no key, no headlines, API error,
+  malformed JSON, unknown tag string, markdown fences).
+- `tests/test_catalyst_provider.py` — 17 tests: PALI SKIP via SEC/keyword/LLM; PTPI SKIP via
+  keyword/LLM; FDA VERIFIED with and without reaction proof; reaction gate low rvol/roc → UNVERIFIED;
+  no headlines → UNVERIFIED; low confidence → UNVERIFIED; LLM disabled → UNVERIFIED; stub still
+  fails closed; stub accepts new kwargs.
+
+### Env vars required for live operation (never in DB)
+
+- `BENZINGA_API_KEY` — Benzinga Pro REST API token
+- `ANTHROPIC_API_KEY` — Claude API key (Haiku 4.5)
+
+## [Phase 6] Live Trading — 2026-06-26
+
+Hardened live broker path. Real money gate: U6 + readiness checklist + client sign-off. Staged
+capital ramp (MICRO → STARTER → FULL). Reconciliation every 30 s. Idempotent orders.
+Disconnect → flatten-or-freeze. Mental-stop monitor fires marketable-limit (never native STOP, U13).
+
+### Added (Python — live trading layer)
+
+- **`adapters/alpaca_broker.py`** — `AlpacaBrokerAdapter` implementing `BrokerAdapter` ABC.
+  All Alpaca SDK imports lazy (optional vendor dep). `submit_marketable_limit`: limit @ ask+offset,
+  TIF=IOC for RTH / TIF=DAY+extended_hours=True for PREMARKET/AFTERHOURS. Idempotent on 422 duplicate
+  `client_order_id` (fetches existing order via `get_order_by_id` instead of double-fill). `partial_sell`:
+  limit @ bid (U13 mental-stop exit). `cancel_all_flatten`: Alpaca `close_all_positions(cancel_orders=True)`
+  (market order — emergency kill-switch exception to U7). `get_halt_status`: via `get_asset()` — NOTE:
+  not intraday-accurate; Databento halt feed required for LULD detection (Phase 8). `get_broker_positions()`:
+  `{symbol: qty}` dict for reconciliation. Fail-closed on all errors.
+
+- **`core/config.py`** — +10 Phase 6 config keys (all in `DEFAULTS`): `LIVE_POLL_MS` (100 ms),
+  `RECONCILE_INTERVAL_S` (30 s), `RECONNECT_MAX_ATTEMPTS` (3), `RECONNECT_DELAY_S` (5 s),
+  `CAPITAL_RAMP_TIER` ("MICRO"), `CAPITAL_RAMP_MICRO_SHARES` (100), `CAPITAL_RAMP_STARTER_SHARES`
+  (2000), `READINESS_MIN_BUYING_POWER` ($5,000), `READINESS_MIN_EQUITY` ($25,000), `CLOCK_DRIFT_MAX_MS`
+  (500 ms).
+
+- **`core/live/__init__.py`** — Package marker; re-exports `CapitalRamp`, `CapitalTier`, `LiveSession`,
+  `ReadinessChecker`, `ReadinessItem`, `ReadinessResult`, `ReconcileResult`, `reconcile_positions`.
+
+- **`core/live/models.py`** — Frozen dataclasses: `CapitalTier` (MICRO/STARTER/FULL StrEnum),
+  `ReadinessItem` (name, passed, detail), `ReadinessResult` (items tuple, `all_passed` computed,
+  `failed_names()`, `summary()`), `ReconcileResult` (matched, broker_only, internal_only, qty_mismatch
+  as frozensets; `clean` property; `summary()`).
+
+- **`core/live/reconcile.py`** — Pure function `reconcile_positions(broker: dict[str, int],
+  internal: dict[str, int]) → ReconcileResult`. No side effects. Four categories: matched (symbol+qty
+  agree), broker_only (ghost — alert), internal_only (orphan — auto-clear), qty_mismatch.
+
+- **`core/live/capital_ramp.py`** — `CapitalRamp` class. Reads `CAPITAL_RAMP_TIER` at init
+  (fail-safe to MICRO on unknown value). `apply(approved_shares)` clamps by tier max. `max_for_tier()`
+  returns None for FULL (no cap). Config is read once at startup; never modified mid-session (U11).
+
+- **`core/live/readiness.py`** — `ReadinessChecker.check_all()` runs 8 independent checks (no
+  fail-fast — always returns full picture). Checks: (1) LIVE_ENABLED, (2) U6_GATE via SimulatorGate,
+  (3) ACCOUNT_TYPE not UNKNOWN, (4) BUYING_POWER ≥ READINESS_MIN_BUYING_POWER, (5) PDT_EQUITY advisory
+  (warns if margin <$25k, never blocks), (6) CAPITAL_TIER valid CapitalTier value, (7) CLOCK_DRIFT via
+  ntplib (asyncio.to_thread), (8) DATA_FEED SPY quote probe within 10 s timeout.
+
+- **`core/live/session.py`** — `LiveSession` — hardened PaperSession for real capital.
+  `run()`: U6 hard gate + LIVE_ENABLED check before spawning any tasks; raises RuntimeError if not
+  satisfied. Five concurrent async tasks: `_bar_loop` (strategy signals), `_mental_stop_loop`
+  (100 ms poll, fires `partial_sell` on breach — U13), `_eod_flatten_loop` (10 s poll, flattens at
+  EOD — U3), `_reconcile_loop` (30 s interval, removes orphans, logs ghosts + qty mismatches),
+  `_feed_watchdog_loop` (sets `_frozen=True` on staleness, calls `_handle_disconnect`).
+  `_handle_entry()`: risk.evaluate() → CapitalRamp.apply() → submit_marketable_limit.
+  `_handle_disconnect()`: retries cancel_all_flatten up to max_attempts; if broker reachable, clears
+  `_open`; if unreachable, stays frozen with CRITICAL log.
+
+- **`RUNBOOK.md`** — Live trading runbook and incident playbook: pre-market readiness procedure
+  (8-check table), capital ramp promotion guide, daily session procedure (07:00–EOD), order routing
+  rules table, 7-scenario incident playbook (readiness fail, reconcile discrepancy, feed staleness,
+  daily halt, kill-switch, duplicate fill, overnight hold), config key reference, monitoring endpoint
+  guide, client sign-off template, open items gating real capital.
+
+### Added (Python — tests, 63 new)
+
+- **`tests/test_reconcile.py`** — 11 tests: all-matched, broker-only, internal-only, qty-mismatch,
+  mixed discrepancy classes, empty-both, broker-empty, internal-empty, summary strings.
+
+- **`tests/test_capital_ramp.py`** — 13 tests: tier property, MICRO/STARTER/FULL apply() caps,
+  no-inflate below cap, zero passthrough, max_for_tier (None for FULL), apply() never exceeds approved.
+
+- **`tests/test_readiness.py`** — 12 tests: all-pass happy path, each of the 8 checks failing
+  independently, no-fail-fast (all 8 always run regardless of failures), ReadinessResult model.
+
+- **`tests/test_live_adapter.py`** — 19 tests: AlpacaBrokerAdapter with mocked SDK;
+  submit_marketable_limit (RTH IOC / pre-market DAY+extended); idempotency on 422 duplicate → fetch
+  existing order; partial_sell limit @ bid; cancel_all_flatten calls close_all_positions; account state;
+  get_broker_positions; halt status; fail-closed on errors.
+
+- **`tests/test_live_session.py`** — 8 tests: U6 gate blocks run(), LIVE_ENABLED=false blocks,
+  clean startup/stop, mental-stop fires partial_sell (not native STOP), reconcile removes orphan,
+  disconnect+reachable → cancel_all_flatten called + _open cleared, disconnect+unreachable → _open
+  preserved + stays frozen, EOD flatten clears _open.
+
+### Broker / vendor decisions recorded
+
+- **Primary broker:** Alpaca (alpaca-py 0.43.4). Paper sandbox + production share same SDK.
+  No local Gateway process required (unlike IBKR). Production keys not yet issued.
+- **Data:** Alpaca Algo Trader Plus subscription required (SIP). IEX-only (Basic plan) insufficient
+  for live scanning (`REQUIRE_SIP=true`).
+- **Halt detection gap:** `get_halt_status` via `get_asset()` does NOT detect intraday LULD halts.
+  Databento/Polygon halt feed required — flagged as Phase 8 dependency.
+- **IBKR (ib_async) evaluated but not selected:** Gateway-based, requires local process; more complex
+  auth. Alpaca preferred for initial live. IB adapter can be added later via `BrokerAdapter` ABC.
+
+---
+
 ## [Phase 5] Dashboard & Monitoring — 2026-06-26
 
 Live read-only dashboard, FastAPI WebSocket push, kill-switch + pause controls, alerting, health

@@ -10,6 +10,7 @@ venv/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+/minimalist
 
 # Env / secrets — NEVER commit real keys (STANDING RULES B)
 .env

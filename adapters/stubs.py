@@ -20,7 +20,13 @@ from adapters.providers import (
 class StubCatalystProvider(CatalystProvider):
     """Always UNVERIFIED → Pillar 5 fails → no trade (§13.1, Rule C)."""
 
-    async def classify(self, symbol: str) -> CatalystVerdict:
+    async def classify(
+        self,
+        symbol: str,
+        *,
+        rvol: object = None,
+        roc_pct: object = None,
+    ) -> CatalystVerdict:
         return CatalystVerdict.UNVERIFIED
 
 

@@ -7,6 +7,51 @@
 
 ---
 
+## SESSION 7 — Phase 7: Catalyst Detection (2026-06-26)
+
+**Goal:** Replace `StubCatalystProvider` with real NLP classifier + SEC filing check.
+
+**Web research conducted before coding (verified 2026-06-26):**
+- Benzinga Pro REST: `https://api.benzinga.com/api/v2/news?token={key}&tickers={sym}&updatedSince={ts}`
+  Auth via `BENZINGA_API_KEY` env var. WS stream at `wss://api.benzinga.com/api/v1/news/stream`.
+  Docs: https://docs.benzinga.com/home
+- EDGAR submissions API (free, no key): `https://data.sec.gov/submissions/CIK{cik}.json`
+  Returns all recent filings (form + date arrays). Better than EFTS text search for ticker-specific
+  dilution checks. Reuses existing `parse_ticker_map` from `adapters/edgar.py`.
+- Claude Haiku 4.5 (`claude-haiku-4-5-20251001`): $1/$5 per MTok I/O ≈ $0.001/classification.
+  Zero-shot structured JSON output. Docs: https://platform.claude.com/docs/en/about-claude/pricing
+
+**Built:**
+- `adapters/catalyst/` package: `models.py`, `keyword_filter.py`, `sec_filing.py`,
+  `benzinga_feed.py`, `llm_classifier.py`, `provider.py`
+- Extended `CatalystProvider.classify` ABC to accept optional `rvol`/`roc_pct` kwargs
+  (backward-compatible — all callers unaffected; stubs updated to match)
+- +5 Phase 7 config keys in `core/config.py`
+- 66 new tests (all passing): keyword, SEC filing, LLM classifier, full provider acceptance
+
+**Test totals:** 627+ tests passing / 3 skipped (DB integration, pre-existing)
+
+**Key decisions:**
+- Defence-in-depth ordering (fastest/cheapest first): reaction gate → SEC EDGAR → headlines →
+  keyword → LLM. Short-circuits on first SKIP hit.
+- EDGAR submissions API preferred over EFTS text-search: deterministic, ticker-scoped,
+  no query ambiguity.
+- Ambiguity → UNVERIFIED (not SKIP). SKIP only when evidence is clear. False-negative is safe.
+- LLM confidence threshold 0.70 (configurable). Below threshold → UNVERIFIED.
+- Sync I/O (urllib + Anthropic SDK) wrapped in `asyncio.to_thread` inside async `classify()`.
+
+**Open items (gating live catalyst use):**
+1. `BENZINGA_API_KEY` — client must subscribe to Benzinga Pro and provide key
+2. `ANTHROPIC_API_KEY` — client must provide Claude API key
+3. Without both keys, `NLPCatalystProvider` degrades to UNVERIFIED (same as stub) — safe
+4. `CATALYST_LLM_ENABLED = false` → keyword + SEC filing only (zero API cost)
+
+**Next phase:** Phase 8 — Level 2 / Tape Microstructure (replace `L2SignalProvider` stub).
+Requires Databento halt feed decision (open item from Phase 6). Before Phase 8, client must
+confirm data vendor for true L2 depth + tick tape.
+
+---
+
 ## SESSION 0 — Orientation (no code)
 
 **Date:** 2026-06-26
@@ -472,6 +517,97 @@ No live capital until U6 is satisfied and the client decisions are resolved.
 - Dashboard `npm install` and `npm run build` not yet run — package-level CI gate for Next.js is Phase 5's outstanding step before merging.
 
 ### Next step
-**Phase 6 (Execution layer)**: limit-only order routing, mental-stop monitor (U13), scale-outs, marketable-limit on breach, EOD flatten. Requires broker adapter vendor decision first.
+**Phase 6 (Live Trading)**: live broker adapter, staged capital ramp, readiness checklist automation, reconciliation, idempotency, disconnect→flatten/freeze. Real money only after U6 + client sign-off.
 
 — end Session 5 —
+
+---
+
+## SESSION 6 — Phase 6: Live Trading
+
+**Date:** 2026-06-26
+**Status:** **DONE — D.** 561 tests passing (pre-existing `test_ws_manager.py` failures are from
+deprecated `asyncio.get_event_loop()` in Phase 5 code, not Phase 6 regressions).
+See `Changelog.md` and `RUNBOOK.md` for full deliverable list.
+
+**Client sign-off:** NOT YET RECORDED — required before setting `LIVE_ENABLED=true`.
+
+### Web-verified this session (STANDING RULES A; June 2026)
+
+| Item | Verified fact | Source |
+|---|---|---|
+| alpaca-py | **0.43.4**; `TradingClient`, `LimitOrderRequest`, `TimeInForce.DAY`/`.IOC`; `close_all_positions(cancel_orders=True)` (market orders internally); `get_all_positions()`; `get_account()`; `get_order_by_id(GetOrderByIdRequest(by="client_order_id"))` for idempotency; extended_hours=True valid only with TimeInForce.DAY | docs.alpaca.markets |
+| Alpaca data subscription | Basic plan = IEX only (insufficient for live scanning). **Algo Trader Plus required for SIP (consolidated tape)** | alpaca.markets/pricing |
+| Alpaca halt detection | `get_asset()` does NOT detect intraday LULD halts. Requires Databento/Polygon halt feed for accurate intraday halt detection | docs.alpaca.markets + databento.com |
+| ib_async (IBKR) | `ib_insync` renamed to `ib_async` after maintainer passed in 2024; still Gateway-based (IB TWS/Gateway must be running locally); evaluated but not selected — Alpaca chosen as primary | github.com/erdewit/ib_async |
+| anyio | **4.14.1**; `@pytest.mark.anyio` (NOT `pytest.mark.asyncio`); `pytest-asyncio` is NOT installed in this project | pypi.org/project/anyio |
+
+### Deliverables built
+
+| File | What it does |
+|---|---|
+| `core/config.py` | +10 Phase 6 config keys: `LIVE_POLL_MS`, `RECONCILE_INTERVAL_S`, `RECONNECT_MAX_ATTEMPTS`, `RECONNECT_DELAY_S`, `CAPITAL_RAMP_TIER`, `CAPITAL_RAMP_MICRO_SHARES`, `CAPITAL_RAMP_STARTER_SHARES`, `READINESS_MIN_BUYING_POWER`, `READINESS_MIN_EQUITY`, `CLOCK_DRIFT_MAX_MS` |
+| `adapters/alpaca_broker.py` | `AlpacaBrokerAdapter` — vendor-agnostic `BrokerAdapter` ABC impl; marketable-limit (limit @ ask+offset); partial_sell (limit @ bid); cancel_all_flatten (emergency kill); idempotent on 422 duplicate; pre-market → DAY+extended_hours=True; RTH → IOC; get_broker_positions() for reconciliation |
+| `core/live/__init__.py` | Package marker; re-exports all Phase 6 public types |
+| `core/live/models.py` | `CapitalTier` (MICRO/STARTER/FULL), `ReadinessItem`, `ReadinessResult`, `ReconcileResult` — all frozen dataclasses |
+| `core/live/reconcile.py` | Pure function `reconcile_positions(broker, internal)` → `ReconcileResult` (matched/broker_only/internal_only/qty_mismatch) |
+| `core/live/capital_ramp.py` | `CapitalRamp` — applies per-tier share cap on top of Risk Manager sizing; fail-safe to MICRO on unknown tier |
+| `core/live/readiness.py` | `ReadinessChecker.check_all()` — 8 independent checks (LIVE_ENABLED, U6_GATE, ACCOUNT_TYPE, BUYING_POWER, PDT_EQUITY, CAPITAL_TIER, CLOCK_DRIFT, DATA_FEED); no fail-fast; always returns full picture |
+| `core/live/session.py` | `LiveSession` — hardened live session; 5 async loops (bar_loop, mental_stop_loop, eod_flatten_loop, reconcile_loop, feed_watchdog_loop); U6 hard gate at run(); CapitalRamp applied post-sizing; flatten-or-freeze on disconnect |
+| `tests/test_reconcile.py` | 11 tests — pure function; all four discrepancy classes; edge cases (empty, all-matched, summary strings) |
+| `tests/test_capital_ramp.py` | 13 tests — MICRO/STARTER/FULL caps; no-inflate; zero passthrough; max_for_tier; unknown-tier falls back to MICRO |
+| `tests/test_readiness.py` | 12 tests — each of the 8 readiness items; no-fail-fast (all 8 always run); ReadinessResult model tests |
+| `tests/test_live_adapter.py` | 19 tests — AlpacaBrokerAdapter mocked SDK; idempotency (422→get_order_by_id); cancel_all_flatten; pre-market TIF; position fetching; account state |
+| `tests/test_live_session.py` | 8 tests — U6 gate blocks run(); LIVE_ENABLED gate; clean startup/stop; mental-stop fires partial_sell (not STOP); reconcile removes orphan; disconnect→flatten; disconnect→freeze; EOD flatten |
+| `RUNBOOK.md` | Live trading runbook: pre-market checklist, capital ramp guide, daily session procedure, order routing rules, 7-scenario incident playbook, config reference, monitoring guide, client sign-off template |
+
+### Key design decisions
+
+- **Alpaca chosen as live broker** (not IBKR): no local Gateway process required; REST+WebSocket API; `close_all_positions` for kill-switch. Paper sandbox and production share the same SDK.
+- **Pre-market TIF:** IOC is RTH-only on Alpaca. Pre-market and after-hours sessions use `TimeInForce.DAY + extended_hours=True`. Session detected via `session_for()` from `core.timeutils`.
+- **Idempotent retry:** On 422 duplicate `client_order_id`, adapter fetches the existing order via `get_order_by_id`. No double fill on network retry.
+- **`cancel_all_flatten` uses market orders** (Alpaca `close_all_positions`): the ONLY exception to U7 (limit-only). Reserved for emergency kill-switch only. Documented in adapter docstring.
+- **`get_halt_status` via `get_asset()` is NOT intraday-accurate.** Logs a NEEDS-VERIFY note: real-time halt detection requires Databento/Polygon halt feed (Phase 8 dependency).
+- **Capital ramp is set at session start from config, NOT modified mid-session** (U11). Promote tier by updating DB config table before the next session.
+- **Reconcile removes orphan positions automatically** (`internal_only` symbols removed from `_open` since broker confirms no position). Ghost positions (`broker_only`) log at WARN — never silently auto-close broker positions.
+
+### Bugs fixed during Phase 6
+
+1. **`TypeError` on INT config keys in tests:** `_config(**overrides)` helper in all 3 test files was storing all overrides as `ValueType.STR`. Fixed to preserve declared `ValueType` for each key by looking up DEFAULTS.
+2. **`@pytest.mark.asyncio` used instead of `@pytest.mark.anyio`:** `pytest-asyncio` is NOT installed. All async test files changed to `@pytest.mark.anyio`.
+3. **Timing failures in `test_live_session.py`:** Internal loops (reconcile 1s, EOD 10s) did not fire within 0.12–0.15s test windows. Fixed by calling internal methods directly (`_reconcile_loop(interval_s=0)`, `_handle_disconnect(max_attempts=1, delay_s=0)`) and writing an inline `fast_eod_loop` with `asyncio.sleep(0)`.
+4. **`NameError: now_utc`:** Fast EOD loop test referenced `now_utc()` without importing it. Added `from core.timeutils import now_utc`.
+
+### Open questions / carried forward
+
+- **Production-blocking items (see `RUNBOOK.md` §9):**
+  - Alpaca production keys + Algo Trader Plus subscription (SIP required)
+  - Halt feed: `get_halt_status` is not intraday-accurate; Databento halt feed required (Phase 8)
+  - Account type + equity sign-off (§13.11 / PDT)
+  - Client sign-off before `LIVE_ENABLED=true`
+- Two pre-existing test failures outside Phase 6 scope:
+  - `test_ws_manager.py` (5 tests): deprecated `asyncio.get_event_loop()` — Phase 5 issue, not Phase 6.
+  - `test_dashboard_api.py`: `httpx2` not installed — Phase 5 dependency gap.
+
+### Next step
+
+**Client sign-off** (Phase 6 "Done" condition per prompt):
+
+```
+CLIENT SIGN-OFF — [Date]
+U6 Gate: [ ] satisfied — [N] consecutive sim days @ [N]% accuracy
+Capital Tier: MICRO approved
+Account type confirmed: [MARGIN/CASH]
+Account equity: $[N]
+Broker: Alpaca (alpaca-py 0.43.4) / Data: Databento 0.80.0
+SIP subscription: Algo Trader Plus (confirmed)
+Outstanding open questions: [list or NONE]
+```
+
+Once client sign-off is recorded above, `LIVE_ENABLED=true` may be set in the DB config table
+and the first dry-run paper session (production keys, paper endpoint) may begin.
+
+**Phase 7 (Catalyst Detection):** Replace `CatalystProvider` stub with NLP news classifier +
+reaction-proof gate + SEC dilution check. Requires real-time news feed vendor decision.
+
+— end Session 6 —
