@@ -1,20 +1,15 @@
 import type { Metadata } from 'next'
 import { GeistSans } from 'geist/font/sans'
 import { GeistMono } from 'geist/font/mono'
-import localFont from 'next/font/local'
+import { DM_Serif_Display } from 'next/font/google'
 import './globals.css'
 
-const dmSerifDisplay = localFont({
-  src: [
-    {
-      path: '../public/fonts/DMSerifDisplay-Regular.woff2',
-      weight: '400',
-      style: 'normal',
-    },
-  ],
+const dmSerifDisplay = DM_Serif_Display({
+  weight: '400',
+  style: ['normal', 'italic'],
   variable: '--font-dm-serif',
   display: 'swap',
-  fallback: ['Georgia', 'serif'],
+  subsets: ['latin'],
 })
 
 export const metadata: Metadata = {
