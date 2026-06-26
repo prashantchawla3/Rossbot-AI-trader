@@ -857,6 +857,340 @@ DEFAULTS: list[ConfigDefault] = [
         "§1/§13.1/Phase7",
         "Max headlines to fetch and pass to the LLM classifier (cost control).",
     ),
+    # ==========================================================================
+    # PHASE 8 — L2 / Tape Microstructure Engine (spec §2A / §13.2).
+    # Real floor-vs-spoof, iceberg, green-tape, absorption/break detectors.
+    # Replaces StubL2SignalProvider. Requires Databento XNAS.ITCH subscription.
+    # ==========================================================================
+    # ---- Rolling windows ----
+    ConfigDefault(
+        "L2_WINDOW_SECS",
+        "30",
+        ValueType.INT,
+        "l2",
+        "§2A/§13.2/Phase8",
+        "Rolling tape window (seconds) used by all L2 detectors.",
+    ),
+    ConfigDefault(
+        "L2_DEPTH_SNAPSHOTS",
+        "20",
+        ValueType.INT,
+        "l2",
+        "§2A/§13.2/Phase8",
+        "Max depth-of-book snapshots retained per symbol (ring buffer).",
+    ),
+    # ---- Spoof detection (EX4/EX6 CADL bid-pull, spec §2A) ----
+    ConfigDefault(
+        "SPOOF_BID_MIN_SHARES",
+        "20000",
+        ValueType.INT,
+        "l2",
+        "§2A EX4/EX6/Phase8",
+        "Min bid size (shares) at a level to flag as a potential spoof bid.",
+    ),
+    ConfigDefault(
+        "SPOOF_DECAY_SECS",
+        "5",
+        ValueType.INT,
+        "l2",
+        "§2A EX4/EX6/Phase8",
+        "If a flagged bid vanishes within this many seconds without prints → SPOOF.",
+    ),
+    ConfigDefault(
+        "SPOOF_MIN_PRINTS",
+        "100",
+        ValueType.INT,
+        "l2",
+        "§2A EX4/EX6/Phase8",
+        "Min tape shares at the flagged level to prove the bid is real (not spoof).",
+    ),
+    # ---- Iceberg detection (GMBL/NIXX, spec §2A, U14) ----
+    ConfigDefault(
+        "ICEBERG_ABSORBED_MIN",
+        "5000",
+        ValueType.INT,
+        "l2",
+        "§2A GMBL/NIXX/U14/Phase8",
+        "Min shares executed in window to suspect a hidden iceberg seller.",
+    ),
+    ConfigDefault(
+        "ICEBERG_ADVANCE_MAX_CENTS",
+        "2",
+        ValueType.INT,
+        "l2",
+        "§2A GMBL/NIXX/U14/Phase8",
+        "Max price advance (cents) while heavy buying occurs → iceberg (price not moving).",
+    ),
+    ConfigDefault(
+        "ICEBERG_DISPLAY_MAX",
+        "600",
+        ValueType.INT,
+        "l2",
+        "§2A GMBL/NIXX/U14/Phase8",
+        "Max displayed ask size (shares) to suspect iceberg (small display, hidden seller).",
+    ),
+    # ---- Real floor / Support (spec §2A, E6 prints-confirmation) ----
+    ConfigDefault(
+        "FLOOR_BID_MIN_SHARES",
+        "10000",
+        ValueType.INT,
+        "l2",
+        "§2A E6/Phase8",
+        "Min bid size at best bid to qualify as a real resting floor.",
+    ),
+    ConfigDefault(
+        "FLOOR_MIN_PRINTS",
+        "200",
+        ValueType.INT,
+        "l2",
+        "§2A E6/Phase8",
+        "Min tape shares executed in window confirming the floor before SUPPORT fires.",
+    ),
+    ConfigDefault(
+        "FLOOR_MIN_STABLE_SNAPS",
+        "2",
+        ValueType.INT,
+        "l2",
+        "§2A E6/Phase8",
+        "Min consecutive depth snapshots where bid >= FLOOR_BID_MIN_SHARES (bid stability).",
+    ),
+    # ---- Absorption → Break (spec §2A absorbed-then-break trigger, E6) ----
+    ConfigDefault(
+        "ABSORB_ASK_MIN_SHARES",
+        "5000",
+        ValueType.INT,
+        "l2",
+        "§2A E6/Phase8",
+        "Min peak displayed ask (shares) to identify a visible large seller for absorb-break.",
+    ),
+    ConfigDefault(
+        "ABSORB_TAPE_MIN_SHARES",
+        "3000",
+        ValueType.INT,
+        "l2",
+        "§2A E6/Phase8",
+        "Min tape shares executed against the visible ask before break qualifies.",
+    ),
+    ConfigDefault(
+        "ABSORB_BREAK_MIN_CENTS",
+        "5",
+        ValueType.INT,
+        "l2",
+        "§2A E6/Phase8",
+        "Min price advance (cents) through the ask level to confirm the break.",
+    ),
+    # ==========================================================================
+    # PHASE 9 — Market-State Classifier + Attention (spec §8 / §13.3 / §13.9).
+    # Rolling-feature heuristic → HOT/COLD/REHAB.  Bias COLD on uncertainty.
+    # Gates EX1/EX2/mid-candle/oversize.
+    # ==========================================================================
+    # ── Rolling window (how many days of data to use) ─────────────────────────
+    ConfigDefault(
+        "MS_HOT_WINDOW_DAYS",
+        "5",
+        ValueType.INT,
+        "market_state",
+        "§8/§13.9/Phase9",
+        "Rolling window (trading days) for market-state feature computation.",
+    ),
+    ConfigDefault(
+        "MS_MIN_WINDOW_DAYS",
+        "3",
+        ValueType.INT,
+        "market_state",
+        "§8/§13.9/Phase9",
+        "Min days of data required; below this → COLD (insufficient signal).",
+    ),
+    # ── HOT thresholds (ALL must fire for HOT; bias COLD per spec §13.9) ──────
+    ConfigDefault(
+        "MS_HOT_BIG_MOVERS_MIN",
+        "2",
+        ValueType.INT,
+        "market_state",
+        "§8/§13.9/Phase9",
+        "Min count of >100%% moves required for the 'big_movers' HOT signal.",
+    ),
+    ConfigDefault(
+        "MS_HOT_FOLLOW_THROUGH_MIN",
+        "0.60",
+        ValueType.DECIMAL,
+        "market_state",
+        "§8/§13.9/Phase9",
+        "Min gapper follow-through rate (0–1) for the HOT signal.",
+    ),
+    ConfigDefault(
+        "MS_HOT_AVG_GREEN_MIN",
+        "0.25",
+        ValueType.DECIMAL,
+        "market_state",
+        "§8/§13.9/Phase9",
+        "Min avg winner %%gain (0–1 fraction) for the HOT signal.",
+    ),
+    # ── COLD thresholds ───────────────────────────────────────────────────────
+    ConfigDefault(
+        "MS_COLD_FOLLOW_THROUGH_MAX",
+        "0.35",
+        ValueType.DECIMAL,
+        "market_state",
+        "§8/§13.9/Phase9",
+        "Max gapper follow-through rate (0–1) that triggers a COLD signal.",
+    ),
+    ConfigDefault(
+        "MS_COLD_AVG_GREEN_MAX",
+        "0.10",
+        ValueType.DECIMAL,
+        "market_state",
+        "§8/§13.9/Phase9",
+        "Max avg winner %%gain (0–1 fraction) that triggers a COLD signal.",
+    ),
+    # ── Attention scorer (§1/§13.3) ───────────────────────────────────────────
+    ConfigDefault(
+        "ATTENTION_RVOL_SCALE",
+        "100.0",
+        ValueType.DECIMAL,
+        "market_state",
+        "§1/§13.3/Phase9",
+        "RVOL value that maps to a full rvol_score=1.0 in the attention scorer.",
+    ),
+    # ==========================================================================
+    # PHASE 10 — Execution Safety: Mental Stops & Time Stop (spec §13.4/§13.5).
+    # Hardened no-native-stop path; quantified breakout-or-bailout;
+    # optional hidden catastrophic backstop; loop latency measurement.
+    # ==========================================================================
+    # ── Optional catastrophic backstop (§13.4) ────────────────────────────────
+    ConfigDefault(
+        "BACKSTOP_ENABLED",
+        "false",
+        ValueType.BOOL,
+        "execution",
+        "§13.4/Phase10",
+        "Enable optional hidden catastrophic backstop far below mental stop (U13-compliant).",
+    ),
+    ConfigDefault(
+        "BACKSTOP_OFFSET",
+        "0.50",
+        ValueType.DECIMAL,
+        "execution",
+        "§13.4/Phase10",
+        "$/sh below entry price for catastrophic backstop level (never a native STOP).",
+    ),
+    # ── Loop latency monitoring (§13.4) ───────────────────────────────────────
+    ConfigDefault(
+        "LATENCY_WARN_MS",
+        "200",
+        ValueType.INT,
+        "execution",
+        "§13.4/Phase10",
+        "Log WARN when mental-stop loop iteration exceeds this latency (ms).",
+    ),
+    # ==========================================================================
+    # PHASE 11 — Halt Resumption & Multi-Day Continuation (spec §12A/§13.7/§12B/§13.10).
+    # Halt engine: post_halt default (C14), LULD + reopen auction, EX5 hard-block.
+    # Continuation engine: Day-1 ≥100% eligibility, numeric done-conditions, 5-min shift.
+    # ==========================================================================
+    # ── Halt engine (§12A / §13.7) ────────────────────────────────────────────
+    ConfigDefault(
+        "PRE_HALT_BAND_ENTRY_PCT",
+        "1.0",
+        ValueType.DECIMAL,
+        "halt",
+        "§12A/§13.7/Phase11",
+        "Pre-halt mode: enter when price within this %% of LULD Limit-Up band (HOT only).",
+    ),
+    # ── Continuation engine (§12B / §13.10) ──────────────────────────────────
+    ConfigDefault(
+        "CONTINUATION_MIN_DAY1_PCT",
+        "100.0",
+        ValueType.DECIMAL,
+        "continuation",
+        "§12B/§13.10/Phase11",
+        "Minimum Day-1 % move (open→high) for Day-2 continuation eligibility.",
+    ),
+    ConfigDefault(
+        "CONTINUATION_HOLD_PCT",
+        "0.70",
+        ValueType.DECIMAL,
+        "continuation",
+        "§12B/§13.10/Phase11",
+        "Day-1 close must be ≥ this fraction of Day-1 high for continuation to be eligible.",
+    ),
+    ConfigDefault(
+        "CONTINUATION_RVOL_DONE_PCT",
+        "0.25",
+        ValueType.DECIMAL,
+        "continuation",
+        "§12B/§13.10/Phase11",
+        "Done if Day-2 RVOL fraction of Day-1 volume falls below this (spec §12B DONE_IF).",
+    ),
+    ConfigDefault(
+        "CONTINUATION_RETRACE_DONE_PCT",
+        "0.50",
+        ValueType.DECIMAL,
+        "continuation",
+        "§12B/§13.10/Phase11",
+        "Done if Day-2 retrace exceeds this fraction of the Day-1 move (spec §12B DONE_IF).",
+    ),
+    ConfigDefault(
+        "CONTINUATION_SIZE_FRACTION",
+        "0.50",
+        ValueType.DECIMAL,
+        "continuation",
+        "§12B/§13.10/Phase11",
+        "Day-2 size as fraction of normal max size (auto-reduced per spec §12B ADJUSTMENTS).",
+    ),
+    # ==========================================================================
+    # PHASE 12 — Sizing/Liquidity & Pattern Hardening (spec §13.6 / §13.8).
+    # ADV-based cap + depth-level cap; mid-candle already gated to HOT (entry_gate.py).
+    # ==========================================================================
+    # ── ADV-based order cap (§13.6) ───────────────────────────────────────────
+    ConfigDefault(
+        "ADV_CAP_FRACTION",
+        "0.01",
+        ValueType.DECIMAL,
+        "sizing",
+        "§13.6/Phase12",
+        "Max order size as fraction of Average Daily Volume (ADV). Default 1%% of ADV.",
+    ),
+    # ── Depth-level aggregation for book cap (§13.6 / U9) ────────────────────
+    ConfigDefault(
+        "DEPTH_CAP_LEVELS",
+        "3",
+        ValueType.INT,
+        "sizing",
+        "§13.6/U9/Phase12",
+        "Number of top ask-side depth levels to aggregate for the displayed-book cap.",
+    ),
+    # ==========================================================================
+    # PHASE 13 — Regulatory / Account Compliance (spec §13.11).
+    # Startup hard-gate, PDT guard (rule eliminated 2026-06-04), T+1 cash, wash-sale, SSR.
+    # ==========================================================================
+    # ── SSR awareness (§13.11 / Rule 201) ─────────────────────────────────────
+    ConfigDefault(
+        "SSR_LOG_ONLY",
+        "true",
+        ValueType.BOOL,
+        "compliance",
+        "§13.11/Phase13",
+        "SSR only restricts short sales (RossBot is long-only); log but never block longs.",
+    ),
+    # ── Wash-sale tracking (§13.11 / IRC §1091) ───────────────────────────────
+    ConfigDefault(
+        "WASH_SALE_WARN_ENABLED",
+        "true",
+        ValueType.BOOL,
+        "compliance",
+        "§13.11/Phase13",
+        "Enable wash-sale risk warnings in audit log (advisory; not a hard trade veto).",
+    ),
+    # ── Startup compliance (§13.11) ───────────────────────────────────────────
+    ConfigDefault(
+        "COMPLIANCE_SHORTING_ENABLED",
+        "false",
+        ValueType.BOOL,
+        "compliance",
+        "§13.11/Phase13",
+        "Short-selling must remain false (locate/HTB out of scope; assert at startup).",
+    ),
 ]
 
 # Conflict keys (C1–C16) for validation/audit — every one must be present in the table.

@@ -2,6 +2,79 @@
 
 All notable changes per CLAUDE.md §11.4. Format: reverse-chronological, one entry per phase/change.
 
+## [Phase 8] L2 / Tape Microstructure Engine — 2026-06-26
+
+Replaced `StubL2SignalProvider` (always UNKNOWN) with `L2MicrostructureProvider` — a real
+depth + tape signal provider backed by Databento TotalView-ITCH (MBP-10 + trades schemas).
+Implements four detectors: spoof/floor-vs-fake (EX4/EX6), iceberg hidden-seller (GMBL/NIXX),
+absorption→break (E6 bullish trigger), real floor (stable bid + prints confirmation).
+Priority: SPOOF/ICEBERG > ABSORB_BREAK > SUPPORT > UNKNOWN. Fail closed on missing data.
+
+### Added (Python — L2 microstructure)
+
+- **`adapters/l2/__init__.py`** — Package; re-exports `L2MicrostructureProvider`, `DepthBook`,
+  `TapeAccumulator`, all four detector functions, `DepthSnapshot`, `TapeAggregate`.
+
+- **`adapters/l2/models.py`** — `DepthSnapshot` (frozen dataclass: best bid/ask + sizes + totals)
+  and `TapeAggregate` (frozen dataclass: window stats — total/buy/sell shares, price first/last,
+  prints, `price_advance_cents`, `green_fraction`, `is_empty`). All prices Decimal; no floats.
+
+- **`adapters/l2/depth_book.py`** — `DepthBook`: rolling ring-buffer of `DepthSnapshot` per
+  symbol (`maxlen=L2_DEPTH_SNAPSHOTS`). Consumes `DepthTick` from Databento MBP-10. Skips
+  incomplete ticks. Provides `snapshots()`, `current()`, `clear()`.
+
+- **`adapters/l2/tape_window.py`** — `TapeAccumulator`: rolling time-window of tape prints per
+  symbol (evicts prints older than `L2_WINDOW_SECS`). Tick-test side inference when `side=None`
+  (price up → BUY, down → SELL). Provides `aggregate(now)` → `TapeAggregate`, `shares_near_price`.
+
+- **`adapters/l2/detectors.py`** — Four pure detector functions (no side effects, fully testable):
+  - `detect_spoof`: large bid (≥`SPOOF_BID_MIN_SHARES`) vanishes within `SPOOF_DECAY_SECS`
+    without `SPOOF_MIN_PRINTS` confirming prints → `L2Signal.SPOOF` (EX4/EX6 CADL bid-pull).
+  - `detect_iceberg`: `total_shares ≥ ICEBERG_ABSORBED_MIN` AND `ask_size ≤ ICEBERG_DISPLAY_MAX`
+    AND `|price_advance| ≤ ICEBERG_ADVANCE_MAX_CENTS` → `L2Signal.ICEBERG` (GMBL/NIXX/U14).
+  - `detect_real_floor`: `bid_size ≥ FLOOR_BID_MIN_SHARES` stable for `FLOOR_MIN_STABLE_SNAPS`
+    AND `total_shares ≥ FLOOR_MIN_PRINTS` → `L2Signal.SUPPORT`. Prints-confirmation required
+    per spec §13.2 — large bid alone is insufficient.
+  - `detect_absorb_break`: peak early ask ≥ `ABSORB_ASK_MIN_SHARES` + tape `≥ ABSORB_TAPE_MIN_SHARES`
+    + price advance `≥ ABSORB_BREAK_MIN_CENTS` → `L2Signal.ABSORB_BREAK` (absorbed-then-break E6).
+
+- **`adapters/l2/provider.py`** — `L2MicrostructureProvider(config)`: stateful provider
+  implementing `L2SignalProvider`. Feed: `on_depth(DepthTick)` + `on_tape(TapeTick)` push data in;
+  `evaluate(symbol)` → `L2Signal` runs detectors in priority order. `reset(symbol)` clears state.
+  UNKNOWN returned when no data for symbol (fail closed, spec §13.2 / CLAUDE.md Rule C).
+
+- **`tests/test_l2_detectors.py`** — 32 unit tests for the four pure detector functions.
+  Covers: classic spoof, CADL bid-pull, GMBL iceberg, NIXX iceberg, absorb-break block-ticking-down,
+  real floor with prints, and all failure/negative cases.
+
+- **`tests/test_l2_accumulators.py`** — 18 unit tests for `DepthBook` and `TapeAccumulator`.
+  Covers: ring-buffer eviction, snapshot ordering, incomplete tick skip, window eviction,
+  tick-test side inference, `shares_near_price`, validation errors.
+
+- **`tests/test_l2_provider.py`** — 12 integration tests through the full provider stack.
+  Acceptance criteria: no-data → UNKNOWN; GMBL iceberg; NIXX iceberg; spoof (vanishing bid);
+  CADL bid-pull trap → SPOOF not SUPPORT; absorb-break → E6; real floor → SUPPORT;
+  priority ordering (ICEBERG beats FLOOR, SPOOF beats ICEBERG); reset clears state.
+
+### Changed
+
+- **`adapters/databento.py`** — `subscribe_tape` now populates `TapeTick.side` from the
+  Databento trades schema `side` char: `'A'` → `Side.BUY` (ask aggressor = green print),
+  `'B'` → `Side.SELL` (bid aggressor = red print), else `None`. Added `Side` import.
+
+- **`core/config.py`** — 13 new Phase 8 config keys (category `l2`):
+  `L2_WINDOW_SECS` (30), `L2_DEPTH_SNAPSHOTS` (20); spoof: `SPOOF_BID_MIN_SHARES` (20 000),
+  `SPOOF_DECAY_SECS` (5), `SPOOF_MIN_PRINTS` (100); iceberg: `ICEBERG_ABSORBED_MIN` (5 000),
+  `ICEBERG_ADVANCE_MAX_CENTS` (2), `ICEBERG_DISPLAY_MAX` (600); floor:
+  `FLOOR_BID_MIN_SHARES` (10 000), `FLOOR_MIN_PRINTS` (200), `FLOOR_MIN_STABLE_SNAPS` (2);
+  absorb-break: `ABSORB_ASK_MIN_SHARES` (5 000), `ABSORB_TAPE_MIN_SHARES` (3 000),
+  `ABSORB_BREAK_MIN_CENTS` (5).
+
+### Test results
+
+689 passed / 3 skipped (DB integration) — up from 627 before Phase 8.
+62 new L2 microstructure tests added.
+
 ## [Phase 7] Catalyst Detection — 2026-06-26
 
 Replaced `StubCatalystProvider` (always UNVERIFIED) with `NLPCatalystProvider` — a real
