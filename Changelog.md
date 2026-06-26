@@ -2,6 +2,167 @@
 
 All notable changes per CLAUDE.md §11.4. Format: reverse-chronological, one entry per phase/change.
 
+## [Phase 4] Paper Trading & Backtesting — 2026-06-26
+
+Event-driven replay engine, conservative fill model, U6 simulator gate, live paper simulator,
+§12 regression fixture tests. **483 passing / 3 skipped** (Postgres integration).
+
+### Added
+
+- **`core/backtest/__init__.py`** — Package; exports all Phase 4 public symbols.
+
+- **`core/backtest/models.py`** — Domain models:
+  - `TradeRecord`: one round-trip trade; tracks `vetoed`, `rule_violation`, `r_multiple`, all
+    money in `Decimal`.
+  - `SimDay`: per-day summary; computed properties `accuracy`, `wins`, `losses`, `day_trades`,
+    `rule_violations`.
+  - `BacktestResult`: aggregate over many `SimDay`s; properties `win_rate`, `avg_r`,
+    `avg_hold_seconds`, `max_daily_drawdown`, `rule_violation_count`, `consecutive_green_days`.
+
+- **`core/backtest/fill_model.py`** — Conservative fill model (optimistic fills forbidden):
+  - `FILL_MODEL_DOC` — full documented assumptions (sub-$20 slippage, ECN fees, U13 cost).
+  - `MENTAL_STOP_LATENCY_SLIP = Decimal("0.05")` — documented U13 cost vs resting stop.
+  - Fee schedule (2026): FINRA TAF $0.000195/sh (sells, cap $9.79), exchange $0.0003/sh.
+  - `entry_fill()` — limit @ ask+offset+slippage; 10% partial fill probability with seed.
+  - `exit_fill_stop()` — U13 mental-stop fill: `min(stop−0.05, bar_low−0.01)` (always worse than a resting stop).
+  - `exit_fill_target()` — sell at bid−slippage (spec §10).
+
+- **`core/backtest/metrics.py`** — `BacktestMetrics` + `compute_metrics()`:
+  - Fields: `total_trades`, `win_rate`, `avg_r`, `avg_hold_minutes`, `max_daily_drawdown`,
+    `total_net_pnl`, `total_fees`, `rule_violation_count` (must be 0), `sim_gate_qualifying_days`,
+    `consecutive_green_days`.
+
+- **`core/backtest/sim_gate.py`** — `SimulatorGate` (U6 hard gate):
+  - `record_day()` — accumulates or resets streak on failing day.
+  - `satisfied` — True when ≥ SIM_GATE_DAYS consecutive days @ ≥ SIM_GATE_ACCURACY.
+  - `live_mode_allowed()` — BOTH `satisfied` AND `LIVE_ENABLED=true` required. Neither alone is enough.
+  - Default `LIVE_ENABLED=false` in config — must be manually set after client sign-off.
+
+- **`core/backtest/replay.py`** — Deterministic event-driven backtest engine:
+  - `ReplayBar` — one replay event (bar + scan + L2 + market context).
+  - `replay()` — processes `Sequence[ReplayBar]` through `StrategyEngine → RiskManager →
+    FillModel`; seed ensures determinism.
+  - Day boundary: resets both engine and risk manager per date.
+  - U13 mental stop: detected on `bar.low`; fills with `exit_fill_stop()` latency penalty.
+  - U3 EOD flatten: positions closed at `EOD_FLATTEN_TIME`.
+  - Every veto recorded as `TradeRecord(vetoed=True)` for audit.
+
+- **`core/backtest/paper_session.py`** — Async live paper simulator:
+  - `PaperSession` — orchestrates `StrategyEngine → RiskManager → BrokerAdapter` on live bars.
+  - Mental-stop background task polls at 500ms; fires marketable-limit (never native STOP, U13).
+  - EOD flatten task fires at `EOD_FLATTEN_TIME` (U3).
+  - `ALPACA_PAPER_BASE_URL = "https://paper-api.alpaca.markets"` documented.
+
+- **`tests/test_backtest_fill_model.py`** — 35 fill model tests:
+  - Entry fill always above ask+offset; fees Decimal; FINRA cap; partial fill via seed; deterministic.
+  - Stop exit always below stop price (U13 latency documented); floor at $0.01.
+  - Target exit below bid; FINRA cap fires at large lots.
+
+- **`tests/test_backtest_sim_gate.py`** — 23 U6 gate tests:
+  - Not satisfied initially; satisfied after ≥10 qualifying days; reset on failing day.
+  - LIVE_ENABLED=false blocks live even when U6 satisfied; custom thresholds work.
+
+- **`tests/test_backtest_replay.py`** — 23 replay engine tests:
+  - Empty replay → zero days; day boundary → correct SimDay count; rule_violation_count = 0.
+  - Latency model: `MENTAL_STOP_LATENCY_SLIP` exported, Decimal, $0.05; stop exit < stop price.
+  - ReplayBar is frozen; BacktestResult properties sane on empty runs.
+
+- **`tests/test_sec12_regression.py`** — 24 §12 fixture regression tests:
+  - SLXN, MLGO: `RiskManager.evaluate()` → `approved=True`, `shares > 0`, no vetoes.
+  - GLTO: `AVERAGE_DOWN` veto (add to red position → forbidden U2).
+  - ESTR: `NO_FIVE_PILLAR` veto (`e1_universe=False` at risk layer → U1).
+  - PALI: `SKIP_CATALYST` veto (`catalyst_skip=True`, secondary offering → U15).
+  - PTPI: `SKIP_CATALYST` veto (buyout → U15).
+  - GME: `HARD_STOP_TIME` veto (2PM ET, past 11AM gate → §7).
+  - TRNR: `approval.shares ≤ liquidity_cap_shares` (thin book limits size → U9).
+  - Three-strikes halt; daily loss limit; session reset clears state.
+
+### Acceptance criteria met
+
+- Full §12 fixture suite green (all 24 regression tests pass).
+- `rule_violation_count = 0` over all sim runs (no U1–U15 breach escapes detection).
+- U6 flag blocks live mode until `satisfied AND LIVE_ENABLED=true` (two-condition hard gate).
+- Latency model present in fills: `MENTAL_STOP_LATENCY_SLIP` documented in `FILL_MODEL_DOC`,
+  stop exit always below stop price, `exit_fill_stop()` returns worse fill than resting stop.
+- Conservative fills enforced: optimistic fills are structurally impossible in `entry_fill()` and
+  `exit_fill_stop()`.
+
+---
+
+## [Phase 3] Risk Management Layer — 2026-06-26
+
+Pre-trade veto gate, position-sizing engine, live monitors, kill-switch.
+**Risk Manager is the mandatory gate between Strategy and Execution.** No order reaches the broker
+without passing `RiskManager.evaluate()`. 380 passing / 3 skipped (Postgres integration).
+
+### Added
+
+- **`core/risk/__init__.py`** — Package; exports `RiskManager`, `VetoReason`, `TradeApproval`,
+  `GiveBackLevel`, `RiskState`.
+
+- **`core/risk/models.py`** — Core DTOs:
+  - `VetoReason` (StrEnum, 11 reasons): `NO_FIVE_PILLAR`, `RR_BELOW_MIN`, `DAILY_LOSS_LIMIT`,
+    `GIVE_BACK_HARD`, `THREE_STRIKES`, `AVERAGE_DOWN`, `PDT_LIMIT`, `SKIP_CATALYST`,
+    `HARD_STOP_TIME`, `HALTED`, `SIZING_ZERO`.
+  - `GiveBackLevel` (StrEnum): `NONE`, `WARN`, `HALT`.
+  - `TradeApproval` (frozen Pydantic): `approved`, `shares`, `vetoes`, `spec_ref`.
+  - `RiskState` (mutable dataclass): `realized_pnl`, `peak_pnl`, `consecutive_losses`,
+    `trades_today`, `halted`, `halt_reason`, `open_positions`.
+
+- **`core/risk/pre_trade.py`** — Pure `evaluate_pre_trade()`:
+  - Fast-path: `halted=True` → returns `[HALTED]` immediately.
+  - U1: `e1_universe=False` → `NO_FIVE_PILLAR`.
+  - 2:1 RR: `signal.rr_ratio < RR_MIN` → `RR_BELOW_MIN`.
+  - U4 daily loss: `min(equity×10%, AVG_WIN_DAY_PNL, BROKER_HARD_LOCKOUT)` → `DAILY_LOSS_LIMIT`.
+  - U4 give-back hard: `(peak−realized)/peak ≥ GIVE_BACK_HARD` → `GIVE_BACK_HARD`.
+  - U5 three-strikes: `consecutive_losses ≥ THREE_STRIKES` → `THREE_STRIKES`.
+  - U2 average-down: entry below open position for same symbol → `AVERAGE_DOWN`.
+  - §13.11 PDT: `trades_today ≥ MAX_TRADES_PER_DAY` → `PDT_LIMIT`.
+  - U15 SKIP-list: `catalyst_skip=True` → `SKIP_CATALYST`.
+  - §7 time gate: `now_et_time > HARD_STOP_TIME` (strictly >) → `HARD_STOP_TIME`.
+  - All applicable vetoes accumulate; callers see all violations at once.
+
+- **`core/risk/sizing.py`** — Pure `compute_size()` (spec §6):
+  - Mode: `risk_formula` (default) → `floor(PER_TRADE_RISK / risk_per_share)`; `flat_block` → `MAX_SIZE` or `STARTER_CAP`.
+  - Cushion: `pnl ≤ 0` → clamp to icebreaker (`floor(MAX_SIZE × ICEBREAKER_FRACTION)`); `0 < pnl < threshold` → clamp to `STARTER_CAP`.
+  - Conviction multiplier: `floor(raw × conviction_score)`.
+  - DOW: Monday ×`DOW_MONDAY_MULT` (0.50), Friday ×`DOW_FRIDAY_MULT` (0.75), Wed/Thu unmodified.
+  - Market state: `COLD` → ×`MARKET_STATE_COLD_MULT` (0.50); `REHAB` → `min(raw, MARKET_STATE_REHAB_CAP)`.
+  - Liquidity cap: clamp to `liquidity_cap_shares` if `> 0` (0 = unconstrained = data unavailable).
+  - MAX_SIZE ceiling: never exceeds `MAX_SIZE`.
+  - Returns `max(0, result)`; zero triggers `SIZING_ZERO` veto in manager.
+
+- **`core/risk/monitors.py`** — Five pure monitor functions:
+  - `is_mental_stop_breached(current, stop)` → `current ≤ stop`; U13 caller fires marketable-limit, never native STOP.
+  - `evaluate_give_back(realized, peak, cfg)` → `NONE / WARN / HALT`; WARN at ≥25%, HALT at ≥50%.
+  - `is_daily_loss_limit(realized, equity, avg_win, cfg)` → True when loss exceeds effective limit.
+  - `should_flatten_eod(now_et_time, cfg)` → True when `≥ EOD_FLATTEN_TIME` (default 15:55); U3.
+  - `is_past_hard_stop_time(now_et_time, cfg)` → True when `> HARD_STOP_TIME` (strictly >).
+
+- **`core/risk/manager.py`** — Stateful `RiskManager`:
+  - `evaluate(signal, now_et, equity, liquidity_cap_shares, catalyst_skip)` → `TradeApproval`; the mandatory gate.
+  - `record_open(symbol, entry_price)` — adds to `open_positions`, increments `trades_today`.
+  - `record_close(symbol, pnl)` — removes from `open_positions`, updates `realized_pnl`, `peak_pnl`, `consecutive_losses`; fires three-strikes halt if streak ≥ 3.
+  - `reset_session()` — replaces `RiskState` with fresh instance; re-enables trading next day.
+  - `halt_session(reason)` — kill-switch; sets `halted=True`, records reason.
+  - `check_mental_stop`, `check_give_back`, `check_daily_loss`, `should_flatten_eod` — live monitor delegates.
+
+- **`core/config.py`** — 6 new Phase 3 config keys: `AVG_WIN_DAY_PNL`, `LIQUIDITY_CAP_FRACTION`,
+  `MARKET_STATE_COLD_MULT`, `MARKET_STATE_REHAB_CAP`, `EOD_FLATTEN_TIME`, `DOW_FRIDAY_MULT`.
+
+- **`tests/test_pre_trade.py`** — 31 tests (10 classes): every veto rule pass + fail; fast-path HALTED; multi-veto accumulation; clean-state acceptance.
+- **`tests/test_sizing.py`** — 27 tests (8 classes): both modes, all caps, DOW × market-state × conviction matrix, liquidity, MAX_SIZE ceiling, degenerate stop → zero.
+- **`tests/test_risk_monitors.py`** — 20 tests (5 classes): all five monitor functions; boundary values for give-back thresholds, daily-loss formula (all three binding components), EOD and hard-stop time gates.
+- **`tests/test_risk_manager.py`** — 43 tests (8 classes): evaluate() happy path, all veto paths, full position lifecycle, three-strikes progression, reset, live monitor integration, liquidity-cap integration.
+
+### Design decisions
+
+- **Mandatory gate pattern**: `evaluate()` returns `TradeApproval`; nothing proceeds without `approved=True`. Vetoes are auditable for the `risk_events` ledger table (Phase 6).
+- **No native STOP orders (U13)**: monitors return booleans; callers fire marketable-limit. Risk Manager never sends any order type directly.
+- **SIZING_ZERO veto**: fires when `compute_size()` returns 0 (degenerate risk budget). Cannot happen via `stop ≥ entry` (that fires `RR_BELOW_MIN` first).
+- **`trades_today` incremented at `record_open`**: correct for PDT pre-trade check (must count this trade before it happens).
+- **`peak_pnl` is a high-watermark**: only moves up on wins, never down.
+
 ## [Phase 2] Strategy Engine (Signal Detection) — 2026-06-26
 
 Entry AND-gate, label-agnostic pattern recognisers, conviction scorer, exit engine.
