@@ -19,6 +19,8 @@ dependencies = [
     "sqlalchemy==2.0.51",
     "alembic==1.18.5",
     "psycopg[binary]==3.3.4",             # psycopg 3 driver (sync + async)
+    # .env loader for local no-Docker dev (db/base.py, db/migrations/env.py) — pypi.org/project/python-dotenv
+    "python-dotenv>=1.0.1",
     # hot state / pub-sub — verified: pypi.org/project/redis (2026-06; redis-py 8.x = RESP3 default)
     "redis==8.0.1",
     # structured JSON logging — verified: pypi.org/project/structlog (2026-06)

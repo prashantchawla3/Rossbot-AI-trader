@@ -7,6 +7,50 @@
 
 ---
 
+## SESSION — Infra: remove Docker, move DB to Supabase (2026-06-27)
+
+**Goal:** Run the full project on Windows without Docker. PostgreSQL → Supabase (hosted free tier),
+connection via `ROSSBOT_DATABASE_URL`. Infra-only — no trading/risk/strategy/adapter logic touched.
+
+**Built / changed:**
+- Archived `docker-compose.yml` → `_docker_archive/` (gitignored); no Dockerfile/.dockerignore existed.
+- `db/base.py` + `db/migrations/env.py`: `load_dotenv()` + shared `ssl_connect_args()` →
+  `sslmode=require` auto-added for `*.supabase.co/.com`. DB code already read `ROSSBOT_DATABASE_URL`.
+- `scripts/run_migrations.py` (new): `python scripts/run_migrations.py` → `alembic upgrade head`.
+- `.env.example` rewritten (Supabase + all real env vars). `requirements.txt` (new, pip mirror).
+- `python-dotenv>=1.0.1` added to pyproject deps (env.py imports it; needed in CI too).
+- Windows `.bat`: `setup_dev.bat`, `dev_start_api.bat`, `dev_start_dashboard.bat`. README top section.
+
+**Decisions:**
+- Driver stays psycopg 3; `.env.example` prefixes `postgresql+psycopg://`. Added `psycopg2-binary`
+  to requirements so a raw Supabase `postgresql://` URI also works (cautious belt-and-suspenders).
+- CI Postgres service left intact: it runs on GitHub's runner (not the dev PC) and must NOT target
+  the single Supabase project (integration tests drop/recreate the schema). Flagged for sign-off.
+
+**Redis → Upstash (added same session):**
+- `core/redis.py`: redis-py `from_url` client factory; Upstash forces TLS so URL is `rediss://`
+  (verified upstash.com/docs/redis/howto/connect-client 2026-06). `ping()` fails closed.
+- `scripts/check_redis.py` verifies the connection. `.env.example` → Upstash `rediss://` template.
+- redis dep already pinned; no trading code wired to Redis yet (infra only).
+
+**Supabase schema + security:**
+- Tables created by Alembic (`run_migrations.py`) — single source of truth, no duplicated DDL.
+- `db/supabase_setup.sql`: run AFTER migrations in Supabase SQL editor. Revokes Data-API grants
+  from anon/authenticated + ENABLE/FORCE RLS on all public tables (deny-by-default, no policies).
+  Bot uses the `postgres` direct connection which bypasses RLS → keeps full access.
+  Verified supabase.com/docs/guides/api/securing-your-api + row-level-security (2026-06).
+
+**Open questions for client:**
+- Should CI point at a throwaway Supabase branch/db, or keep the ephemeral GitHub Postgres service?
+- Alternative to RLS SQL: disable the Data API entirely (Dashboard → Settings → Data API). Confirm
+  whether the dashboard (Phase 5) will ever use the Supabase JS client/anon key; if not, both
+  the revoke+RLS and disabling the Data API are safe (bot uses the direct connection only).
+
+**Next step:** create Supabase + Upstash projects, set `ROSSBOT_DATABASE_URL` + `ROSSBOT_REDIS_URL`,
+run migrations, run `db/supabase_setup.sql`, verify `/health` and `python scripts/check_redis.py`.
+
+---
+
 ## SESSION 9/10 — Phases 9 & 10: Market-State Classifier + Execution Safety (2026-06-26)
 
 **Goal:** Replace `StubMarketStateProvider` with real HOT/COLD/REHAB rolling-feature classifier

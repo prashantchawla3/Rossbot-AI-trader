@@ -6,8 +6,14 @@ import os
 from logging.config import fileConfig
 
 from alembic import context
+from db.base import ssl_connect_args  # Supabase SSL connect-args helper
 from db.models import Base  # registers all 12 tables on Base.metadata
+from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
+
+# Load .env so `python scripts/run_migrations.py` / `alembic upgrade head` pick up
+# ROSSBOT_DATABASE_URL locally (no Docker). No-op in CI/prod where vars are exported.
+load_dotenv()
 
 config = context.config
 
@@ -38,10 +44,12 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode (live connection)."""
+    url = config.get_main_option("sqlalchemy.url") or ""
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=ssl_connect_args(url),  # sslmode=require for Supabase
     )
     with connectable.connect() as connection:
         context.configure(

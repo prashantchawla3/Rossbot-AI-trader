@@ -1,0 +1,36 @@
+# RossBot — pip requirements for local no-Docker dev on Windows (venv + pip).
+# Mirrors the pinned runtime deps in pyproject.toml (the canonical manifest for `uv`).
+# Install:  python -m venv venv && venv\Scripts\activate && pip install -r requirements.txt
+
+# --- API layer (api/) ---
+fastapi>=0.111.0
+uvicorn[standard]>=0.29.0
+
+# --- Config + typed models ---
+pydantic>=2.13.4
+pydantic-settings>=2.14.2
+
+# --- Persistence (db/) ---
+sqlalchemy>=2.0.51
+alembic>=1.13.0
+psycopg[binary]>=3.3.4        # psycopg 3 — driver the app uses (postgresql+psycopg://)
+psycopg2-binary>=2.9.9        # fallback so a raw Supabase URI (postgresql://) also works
+
+# --- Env loading (.env) for local dev ---
+python-dotenv>=1.0.0
+
+# --- Hot state / pub-sub ---
+redis>=8.0.1
+
+# --- Structured JSON logging ---
+structlog>=26.1.0
+
+# --- NTP clock-drift check util ---
+ntplib>=0.4.0
+
+# --- tz database (required on Windows; stdlib zoneinfo has no bundled db there) ---
+tzdata>=2026.1
+
+# --- Phase 1+ market-data vendor SDKs (optional; uncomment when wiring adapters) ---
+# alpaca-py>=0.43.4
+# databento>=0.80.0

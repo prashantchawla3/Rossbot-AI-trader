@@ -2,6 +2,47 @@
 
 All notable changes per CLAUDE.md §11.4. Format: reverse-chronological, one entry per phase/change.
 
+## [Infra] Remove Docker dependency → Supabase (local no-Docker dev) — 2026-06-27
+
+Infrastructure-only change so the project runs on Windows without Docker; PostgreSQL moves to
+Supabase (hosted). No trading logic, financial math, broker adapters, or migration files touched.
+
+- **Archived** `docker-compose.yml` → `_docker_archive/docker-compose.yml` (kept for future prod);
+  added `_docker_archive/` to `.gitignore`.
+- `db/base.py` — `load_dotenv()` at import; new `ssl_connect_args(url)` helper adds
+  `sslmode=require` for Supabase hosts; `make_engine()` passes it through `connect_args`.
+- `db/migrations/env.py` — `load_dotenv()`; reuses `ssl_connect_args` so `alembic upgrade head`
+  connects to Supabase over SSL. (Existing migration files in `versions/` untouched.)
+- `scripts/run_migrations.py` (new) — loads `.env`, runs `alembic upgrade head`.
+- `.env.example` — rewritten: Supabase `ROSSBOT_DATABASE_URL` template + every env var the
+  codebase reads (dashboard, health, alerting, broker/data vendors). Redis marked optional.
+- `requirements.txt` (new) — pip mirror of pinned runtime deps (adds `python-dotenv`,
+  `psycopg2-binary` fallback); `python-dotenv>=1.0.1` also added to `pyproject.toml`.
+- Windows helpers (new): `setup_dev.bat`, `dev_start_api.bat`, `dev_start_dashboard.bat`.
+- `README.md` — new top "Local Development (No Docker)" section; uv setup updated for Supabase.
+- `/health` endpoint already present (`api/main.py`) — no change needed.
+- CI (`.github/workflows/ci.yml`) left as-is: its Postgres is an ephemeral GitHub-runner service
+  (not the user's machine) and must not point at the single Supabase project (tests drop schema).
+
+### Redis → Upstash (replaces archived docker Redis)
+
+- `core/redis.py` (new) — `redis_url()`, `make_redis_client()` (redis-py `from_url`, TLS via
+  `rediss://`, health-check + keepalive for the long-running bot), fail-safe `ping()`.
+  Verified: upstash.com/docs/redis/howto/connect-client (2026-06) — TLS always on.
+- `scripts/check_redis.py` (new) — round-trips a key to verify the Upstash connection.
+- `.env.example` — `ROSSBOT_REDIS_URL` now an Upstash `rediss://…:6379` template.
+- `redis==8.0.1` already pinned (pyproject) / `redis>=8.0.1` (requirements) — no dep change.
+- No trading logic wired to Redis yet (none existed); this is the connection infrastructure only.
+
+### Supabase schema + security SQL
+
+- `db/supabase_setup.sql` (new) — run AFTER `run_migrations.py`. Tables stay owned by Alembic
+  (single source of truth `db/models.py`, no hand-duplicated DDL). This script does the
+  Supabase-specific hardening: revoke Data-API auto-grants from anon/authenticated + ENABLE/FORCE
+  Row-Level Security on all `public` tables (deny-by-default, no policies — private bot). Bot
+  connects as `postgres` and bypasses RLS, keeping full access.
+  Verified: supabase.com/docs/guides/api/securing-your-api + .../row-level-security (2026-06).
+
 ## [Phases 9-10] Market-State Classifier + Execution Safety — 2026-06-26
 
 88 new tests; total 854 passing / 3 skipped (DB integration).

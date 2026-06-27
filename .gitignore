@@ -17,6 +17,9 @@ venv/
 .env.*
 !.env.example
 
+# Archived Docker infra (kept locally for future prod use; not tracked)
+_docker_archive/
+
 # uv
 # uv.lock IS committed (reproducible installs); nothing to ignore here.
 
