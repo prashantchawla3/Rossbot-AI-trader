@@ -1,6 +1,7 @@
 'use client'
 
 import { Badge } from './Badge'
+import { InfoHint, Tooltip } from './Tooltip'
 import type { WatchlistEntry } from '@/lib/types'
 
 interface WatchlistTableProps {
@@ -10,23 +11,35 @@ interface WatchlistTableProps {
 
 export function WatchlistTable({ entries, tier }: WatchlistTableProps) {
   if (entries.length === 0) {
-    return (
-      <p className="small muted" style={{ textAlign: 'center', padding: '24px 0' }}>
-        No Tier {tier} symbols yet
-      </p>
-    )
+    return <p className="empty-state">No Tier {tier} symbols yet</p>
   }
 
   return (
+    <div className="table-wrap">
     <table className="table">
       <thead>
         <tr>
           <th>Symbol</th>
           <th>Price</th>
-          <th>RVOL</th>
-          <th>Float</th>
+          <th>
+            <span className="eyebrow" style={{ gap: '4px' }}>
+              RVOL
+              <InfoHint label="Relative volume — how much more this stock is trading today vs. a normal day. 5x means five times the usual." />
+            </span>
+          </th>
+          <th>
+            <span className="eyebrow" style={{ gap: '4px' }}>
+              Float
+              <InfoHint label="Number of shares available to trade. A small float (≤20M) can move fast on heavy buying." />
+            </span>
+          </th>
           <th>Catalyst</th>
-          <th>Pillars</th>
+          <th>
+            <span className="eyebrow" style={{ gap: '4px' }}>
+              Pillars
+              <InfoHint label="How many of the 5 quality checks this stock passes (price, float, volume, momentum, news). 5/5 means it qualifies to trade." />
+            </span>
+          </th>
         </tr>
       </thead>
       <tbody>
@@ -55,14 +68,23 @@ export function WatchlistTable({ entries, tier }: WatchlistTableProps) {
                 )}
               </td>
               <td>
-                <Badge variant={allPass ? 'success' : 'warn'}>
-                  {pillarsPass}/{pillarsTotal}
-                </Badge>
+                <Tooltip
+                  label={
+                    Object.entries(e.pillar_flags)
+                      .map(([k, v]) => `${v ? '✓' : '✗'} ${k}`)
+                      .join('   ') || 'No pillar data'
+                  }
+                >
+                  <Badge variant={allPass ? 'success' : 'warn'}>
+                    {pillarsPass}/{pillarsTotal}
+                  </Badge>
+                </Tooltip>
               </td>
             </tr>
           )
         })}
       </tbody>
     </table>
+    </div>
   )
 }

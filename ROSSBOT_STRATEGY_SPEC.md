@@ -658,6 +658,24 @@ For each hard-to-automate rule: why hard / best proxy / data source / risk if pr
 | C15 | Move-to-BE trigger `[V2]` | +5–10¢ (S3) / +10¢ (S4) | +0.10 |
 | C16 | Platform `[V2]` | Day Trade Dash / Trade Ideas | vendor-agnostic reimpl |
 
+### U11 dashboard-override exception (client-approved 2026-06-28)
+The base guardrail **U11** keeps strategy/config immutable mid-session. For the interactive
+operator console the client approved a **narrow, audited** relaxation — NOT a blanket override:
+
+- **Scope:** only four session keys are runtime-editable — `AUTO_TRADE`, `MARKET_STATE`,
+  `MAX_DAILY_LOSS`, `SCAN_INTERVAL` — via `PATCH /api/config` (the single PATCH route).
+- **Audit:** every override writes an append-only `risk_event` row
+  (`event_type=CONFIG_OVERRIDE`, before→after, `spec_ref=U11_dashboard_exception`).
+- **Safety preserved:** the override layer never weakens a NON-NEGOTIABLE guardrail by
+  construction — U2/U3/U7/U8/U13 are untouched; daily-loss/3-strikes/give-back still fire.
+- **Manual trades** (AI "Execute" + Quick Order) are NOT a bypass: every order is routed
+  through the Risk Manager gate, which can veto or resize, and is limit-only (U7).
+- All mutating routes require the `X-API-Key` header.
+
+Implementation: `core/demo/engine.py` (effective-config getters + `set_override`),
+`api/routers/operator.py` (`PATCH /api/config`, manual-trade, control routes).
+Pinned by `tests/test_dashboard_api.py::TestNoMidSessionParamMutation`.
+
 ## Appendix B — Automation Risk Flags (architect notes)
 - **Catalyst detection** (Pillar 5): defined skip-list + reaction-proof gate (13.1); bias to skip on ambiguity.
 - **Level 2 / tape** (E6/E7/2A): needs true depth + tick tape + halt imbalance quotes; most retail APIs insufficient (13.2).

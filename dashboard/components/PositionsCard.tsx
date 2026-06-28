@@ -1,4 +1,5 @@
 import type { OpenPosition } from '@/lib/types'
+import { InfoHint } from './Tooltip'
 
 interface PositionsCardProps {
   positions: OpenPosition[]
@@ -13,14 +14,11 @@ function pnlSentiment(pnl: string) {
 
 export function PositionsCard({ positions }: PositionsCardProps) {
   if (positions.length === 0) {
-    return (
-      <p className="small muted" style={{ textAlign: 'center', padding: '24px 0' }}>
-        No open positions
-      </p>
-    )
+    return <p className="empty-state">No open positions right now</p>
   }
 
   return (
+    <div className="table-wrap">
     <table className="table">
       <thead>
         <tr>
@@ -28,7 +26,12 @@ export function PositionsCard({ positions }: PositionsCardProps) {
           <th>Shares</th>
           <th>Avg</th>
           <th>Last</th>
-          <th>Unreal. P&L</th>
+          <th>
+            <span className="eyebrow" style={{ gap: '4px' }}>
+              Unreal. P&L
+              <InfoHint label="Profit or loss if you sold this position right now, at the current price. Not yet locked in." />
+            </span>
+          </th>
         </tr>
       </thead>
       <tbody>
@@ -62,5 +65,6 @@ export function PositionsCard({ positions }: PositionsCardProps) {
         })}
       </tbody>
     </table>
+    </div>
   )
 }

@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef } from 'react'
-import type { IChartApi, ISeriesApi, LineData } from 'lightweight-charts'
+import type { IChartApi, ISeriesApi, LineData, LineWidth } from 'lightweight-charts'
 
 interface PnLChartProps {
   data: LineData[]
@@ -19,7 +19,7 @@ export function PnLChart({ data, height = 140 }: PnLChartProps) {
     let chart: IChartApi
     let series: ISeriesApi<'Line'>
 
-    import('lightweight-charts').then(({ createChart, ColorType }) => {
+    import('lightweight-charts').then(({ createChart, ColorType, LineSeries }) => {
       if (!containerRef.current) return
 
       const root = getComputedStyle(document.documentElement)
@@ -35,7 +35,7 @@ export function PnLChart({ data, height = 140 }: PnLChartProps) {
         layout: {
           background: { type: ColorType.Solid, color: 'transparent' },
           textColor: muted,
-          fontFamily: 'Geist Mono, monospace',
+          fontFamily: 'JetBrains Mono, monospace',
           fontSize: 11,
         },
         grid: {
@@ -49,7 +49,6 @@ export function PnLChart({ data, height = 140 }: PnLChartProps) {
         },
         timeScale: {
           borderColor: 'transparent',
-          textColor: muted,
           timeVisible: true,
           secondsVisible: false,
         },
@@ -57,18 +56,14 @@ export function PnLChart({ data, height = 140 }: PnLChartProps) {
         handleScale: false,
       })
 
-      series = chart.addSeries(
-        // @ts-expect-error lightweight-charts v5 addSeries API
-        { seriesType: 'Line' },
-        {
-          color: fg,
-          lineWidth: 1.5,
-          crosshairMarkerVisible: true,
-          crosshairMarkerRadius: 4,
-          lastValueVisible: true,
-          priceLineVisible: false,
-        },
-      )
+      series = chart.addSeries(LineSeries, {
+        color: fg,
+        lineWidth: 2 as LineWidth,
+        crosshairMarkerVisible: true,
+        crosshairMarkerRadius: 4,
+        lastValueVisible: true,
+        priceLineVisible: false,
+      })
       series.setData(data)
 
       chartRef.current = chart

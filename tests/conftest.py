@@ -7,7 +7,15 @@ tests in test_schema_migration.py, which require ROSSBOT_TEST_DATABASE_URL.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
+
+# Keep the demo trading loop out of the API lifespan during tests.
+os.environ.setdefault("ROSSBOT_RUN_ENGINE", "false")
+# Pin the dashboard API key BEFORE any db/api import. db.base.load_dotenv() (import-time)
+# would otherwise pull DASHBOARD_API_KEY from the project .env and clobber the value the
+# dashboard auth tests expect ("test-rossbot-key"). load_dotenv(override=False) respects this.
+os.environ.setdefault("DASHBOARD_API_KEY", "test-rossbot-key")
 
 import pytest
 from db.models import Base

@@ -11,6 +11,7 @@ venv/
 .ruff_cache/
 .pytest_cache/
 /minimalist
+/Ross-Bot
 
 # Env / secrets — NEVER commit real keys (STANDING RULES B)
 .env

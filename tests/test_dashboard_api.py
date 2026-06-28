@@ -237,62 +237,77 @@ class TestAlertFiringOnFeedGap:
 
 
 class TestNoMidSessionParamMutation:
-    """Acceptance: dashboard exposes no parameter-editing endpoints (U11).
+    """Acceptance: dashboard mutation surface stays inside the approved policy.
 
-    U11 (spec §11): "Walk away when emotionally hijacked / after 3 strikes."
-    The bot's spec maps this to: no mid-session config or strategy parameter
-    editing via the dashboard.  Only kill-switch + pause are allowed.
+    Originally (Phase 5) the dashboard was read-only: U11 forbade ALL mid-session
+    parameter editing. The operator-console rebuild relaxes U11 for a NARROW,
+    CLIENT-APPROVED, audited exception (ROSSBOT_STRATEGY_SPEC.md Appendix A,
+    "U11 dashboard-override exception"):
+
+      - PATCH is permitted on EXACTLY ONE route — /api/config — and only for the
+        four session keys (AUTO_TRADE, MARKET_STATE, MAX_DAILY_LOSS, SCAN_INTERVAL).
+        Every change writes a risk_event audit row.
+      - Manual trades go through the Risk Manager gate (they can be vetoed/resized).
+      - All mutating routes require the X-API-Key header.
+
+    These tests pin that contract so the surface can't silently widen. Route
+    discovery uses the OpenAPI schema (FastAPI 0.138 stores included routers lazily,
+    so iterating app.routes no longer flattens them).
     """
 
-    def test_no_patch_or_put_routes_exist(self, client: Any) -> None:
-        """No PATCH or PUT methods on any route — U11."""
-        forbidden_methods = {"PATCH", "PUT", "DELETE"}
+    @staticmethod
+    def _paths() -> dict[str, set[str]]:
+        """{path: {METHOD, ...}} from the materialised OpenAPI schema."""
+        out: dict[str, set[str]] = {}
+        for path, ops in app.openapi()["paths"].items():
+            out[path] = {m.upper() for m in ops}
+        return out
+
+    def test_patch_only_on_audited_config(self, client: Any) -> None:
+        """PATCH/PUT exist ONLY on /api/config (the audited U11 override)."""
         violations = [
-            f"{r.methods} {r.path}"
-            for r in app.routes
-            if hasattr(r, "methods") and r.methods & forbidden_methods
+            f"{m} {p}"
+            for p, methods in self._paths().items()
+            for m in methods
+            if m in {"PATCH", "PUT"} and p != "/api/config"
         ]
-        assert violations == [], (
-            f"U11 violation: mutable methods found on routes: {violations}"
+        assert violations == [], f"Unexpected PATCH/PUT routes (U11): {violations}"
+
+    def test_config_patch_requires_api_key(self, client: Any) -> None:
+        """The config override is auth-gated and audited (not anonymous)."""
+        resp = client.patch("/api/config", json={"key": "AUTO_TRADE", "value": True})
+        assert resp.status_code in (401, 403), (
+            "config override must require the X-API-Key header"
         )
 
-    def test_no_config_mutation_endpoints(self, client: Any) -> None:
-        """No /config/* write routes exist (U11)."""
-        mutating_config_routes = [
-            r
-            for r in app.routes
-            if hasattr(r, "path")
-            and "/config" in r.path
-            and hasattr(r, "methods")
-            and r.methods & {"POST", "PATCH", "PUT"}
-        ]
-        assert mutating_config_routes == [], (
-            "U11 violation: config mutation route found"
-        )
-
-    def test_only_allowed_post_routes(self, client: Any) -> None:
-        """POST routes exist ONLY for controls (kill-switch, pause, resume) — U11."""
-        post_paths = {
-            r.path
-            for r in app.routes
-            if hasattr(r, "methods") and "POST" in r.methods
-        }
-        allowed_post_paths = {
+    def test_post_routes_within_operator_allowlist(self, client: Any) -> None:
+        """Every POST route is a known control / operator action — no surprises."""
+        allowed = {
             "/controls/kill-switch",
             "/controls/pause",
             "/controls/resume",
+            "/api/scanner/trigger",
+            "/api/control/flatten",
+            "/api/control/pause",
+            "/api/control/resume",
+            "/api/control/halt-day",
+            "/api/positions/{symbol}/close",
+            "/api/positions/{symbol}/scale-out",
+            "/api/positions/{symbol}/stop",
+            "/api/trade/manual",
+            "/api/trade/manual-order",
+            "/api/demo/test-signal",
         }
-        unexpected = post_paths - allowed_post_paths
-        assert unexpected == set(), (
-            f"U11 violation: unexpected POST routes found: {unexpected}"
-        )
+        post_paths = {p for p, methods in self._paths().items() if "POST" in methods}
+        unexpected = post_paths - allowed
+        assert unexpected == set(), f"Unexpected POST routes: {unexpected}"
 
     def test_read_only_api_endpoints_return_data(self, client: Any) -> None:
         for path in ["/api/state", "/api/watchlist", "/api/positions", "/health/"]:
             resp = client.get(path)
             assert resp.status_code == 200, f"GET {path} returned {resp.status_code}"
 
-    def test_state_endpoint_has_no_body_params(self, client: Any) -> None:
+    def test_state_endpoint_ignores_request_body(self, client: Any) -> None:
         """GET /api/state must not accept a body that could mutate state (U11)."""
-        resp = client.get("/api/state", content=b'{"evil": true}')
+        resp = client.request("GET", "/api/state", content=b'{"evil": true}')
         assert resp.status_code == 200  # ignores body — no mutation possible

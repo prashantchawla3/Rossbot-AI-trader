@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -148,6 +148,142 @@ class AlpacaMarketDataAdapter(MarketDataAdapter):
             bid_size=int(q.bid_size),
             ask_size=int(q.ask_size),
         )
+
+    # ---- demo polling helpers (REST historical client) -------------------
+    async def get_snapshot(self, symbols: Sequence[str]) -> dict[str, dict[str, Any]]:
+        """Batch snapshot: {symbol: {price, prev_close, change_pct, volume}}.
+
+        Used by the scanner's Tier-A wide net. ``change_pct`` is daily close vs the
+        previous daily close (%). Missing symbols are simply omitted (fail-safe).
+        spec §1 TIER_A wide net.
+        """
+        from alpaca.data.requests import StockSnapshotRequest  # lazy
+
+        client = self._hist_client()
+        req = StockSnapshotRequest(symbol_or_symbols=list(symbols), feed=self._data_feed())
+        try:
+            snaps = await asyncio.to_thread(client.get_stock_snapshot, req)
+        except Exception:  # noqa: BLE001 — partial-universe failure must not crash scan
+            return {}
+
+        out: dict[str, dict[str, Any]] = {}
+        for sym, snap in (snaps or {}).items():
+            if snap is None:
+                continue
+            daily = getattr(snap, "daily_bar", None)
+            prev = getattr(snap, "previous_daily_bar", None)
+            trade = getattr(snap, "latest_trade", None)
+            minute = getattr(snap, "minute_bar", None)
+            price = None
+            if trade is not None and getattr(trade, "price", None) is not None:
+                price = Decimal(str(trade.price))
+            elif daily is not None and getattr(daily, "close", None) is not None:
+                price = Decimal(str(daily.close))
+            elif minute is not None and getattr(minute, "close", None) is not None:
+                price = Decimal(str(minute.close))
+            if price is None:
+                continue
+            prev_close = (
+                Decimal(str(prev.close))
+                if prev is not None and getattr(prev, "close", None) is not None
+                else None
+            )
+            change_pct = Decimal("0")
+            if prev_close and prev_close > 0:
+                change_pct = (price - prev_close) / prev_close * Decimal("100")
+            volume = int(getattr(daily, "volume", 0) or 0) if daily is not None else 0
+            out[str(sym)] = {
+                "price": price,
+                "prev_close": prev_close,
+                "change_pct": change_pct,
+                "volume": volume,
+            }
+        return out
+
+    async def get_bars(
+        self, symbol: str, timeframe: str = "1Min", limit: int = 50
+    ) -> list[BarTick]:
+        """Return the most recent ``limit`` historical bars (oldest→newest) for ``symbol``.
+
+        A ``start`` window is REQUIRED on Alpaca's historical REST API: omitting it makes the
+        IEX free feed return an EMPTY set (verified 2026-06 — daily bars without ``start`` →
+        0 rows → RVOL never computes → Pillar-3 never passes). The window is sized by
+        timeframe and ``limit``, then we slice the tail so the *newest* bars are returned even
+        when the window (sized to span a weekend/holiday) holds more than ``limit`` bars.
+        spec §1 Pillar-3 (RVOL) / §2 (MACD on recent bars).
+        """
+        from alpaca.data.requests import StockBarsRequest  # lazy
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit  # lazy
+
+        tf_map = {
+            "1Min": TimeFrame(1, TimeFrameUnit.Minute),
+            "1min": TimeFrame(1, TimeFrameUnit.Minute),
+            "5Min": TimeFrame(5, TimeFrameUnit.Minute),
+            "1Day": TimeFrame(1, TimeFrameUnit.Day),
+            "1day": TimeFrame(1, TimeFrameUnit.Day),
+        }
+        tf = tf_map.get(timeframe, TimeFrame(1, TimeFrameUnit.Minute))
+
+        # Lookback window. Daily bars need ~1.5 calendar days per trading day (weekends +
+        # holidays), so size generously off ``limit``; intraday bars need only a few days to
+        # reach back across a weekend to the last live session.
+        is_daily = timeframe.lower() == "1day"
+        lookback = timedelta(days=limit * 2 + 14) if is_daily else timedelta(days=5)
+        end = datetime.now(UTC)
+        start = end - lookback
+
+        client = self._hist_client()
+        req = StockBarsRequest(
+            symbol_or_symbols=symbol,
+            timeframe=tf,
+            start=start,
+            end=end,
+            feed=self._data_feed(),
+        )
+        try:
+            result = await asyncio.to_thread(client.get_stock_bars, req)
+        except Exception:  # noqa: BLE001
+            return []
+
+        rows = (getattr(result, "data", {}) or {}).get(symbol, [])
+        # Keep only the newest ``limit`` bars (Alpaca returns oldest→newest for the window).
+        if limit and len(rows) > limit:
+            rows = rows[-limit:]
+        bars: list[BarTick] = []
+        for b in rows:
+            bars.append(
+                BarTick(
+                    symbol=symbol,
+                    ts=_utc(b.timestamp),
+                    timeframe=timeframe,
+                    open=Decimal(str(b.open)),
+                    high=Decimal(str(b.high)),
+                    low=Decimal(str(b.low)),
+                    close=Decimal(str(b.close)),
+                    volume=int(b.volume),
+                )
+            )
+        return bars
+
+    async def get_rvol(self, symbol: str, *, current_volume: int | None = None) -> Decimal | None:
+        """Relative volume = today's volume / avg of prior ~50 daily volumes.
+
+        Computed from daily bars. Returns None if insufficient history. Intraday
+        ``current_volume`` (from a snapshot) may be passed; otherwise the latest
+        daily bar's volume is used. spec §1 Pillar-3 / §13.
+        """
+        bars = await self.get_bars(symbol, timeframe="1Day", limit=51)
+        if len(bars) < 6:  # need a few days to be meaningful
+            return None
+        history = bars[:-1]  # exclude today
+        today_vol = current_volume if current_volume is not None else bars[-1].volume
+        vols = [b.volume for b in history if b.volume > 0]
+        if not vols:
+            return None
+        avg = sum(vols) / len(vols)
+        if avg <= 0:
+            return None
+        return (Decimal(today_vol) / Decimal(str(avg))).quantize(Decimal("0.01"))
 
     async def news_stream(self, symbols: Sequence[str] | None = None) -> AsyncIterator[NewsItem]:
         from alpaca.data.live.news import NewsDataStream  # lazy

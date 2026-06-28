@@ -370,6 +370,104 @@ class AlpacaBrokerAdapter(BrokerAdapter):
                 continue
         return result
 
+    # ── Demo dashboard helpers (not in ABC; richer position/order detail) ─────
+
+    async def get_positions_detailed(self) -> list[dict[str, Any]]:
+        """Return open positions with live mark + unrealized P&L for the dashboard.
+
+        Each item: {symbol, qty, avg_entry_price, current_price, unrealized_pl,
+        market_value}. All monetary values are Decimal (CLAUDE.md §10). Returns []
+        on any error (fail-safe; the loop must keep running).
+        """
+        client = self._get_client()
+        try:
+            positions = await asyncio.to_thread(client.get_all_positions)
+        except Exception:  # noqa: BLE001
+            return []
+
+        out: list[dict[str, Any]] = []
+        for p in positions:
+            try:
+                qty = int(float(str(p.qty)))
+                if qty == 0:
+                    continue
+                out.append(
+                    {
+                        "symbol": str(p.symbol),
+                        "qty": qty,
+                        "avg_entry_price": _to_decimal(getattr(p, "avg_entry_price", None)),
+                        "current_price": _to_decimal(
+                            getattr(p, "current_price", None)
+                            or getattr(p, "avg_entry_price", None)
+                        ),
+                        "unrealized_pl": _to_decimal(getattr(p, "unrealized_pl", None)),
+                        "market_value": _to_decimal(getattr(p, "market_value", None)),
+                    }
+                )
+            except (ValueError, AttributeError):
+                continue
+        return out
+
+    async def get_recent_orders(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Return recent orders (newest first) for the dashboard order view."""
+        from alpaca.trading.requests import GetOrdersRequest  # lazy
+        from alpaca.trading.enums import QueryOrderStatus  # lazy
+
+        client = self._get_client()
+        try:
+            req = GetOrdersRequest(status=QueryOrderStatus.ALL, limit=limit)
+            orders = await asyncio.to_thread(client.get_orders, req)
+        except Exception:  # noqa: BLE001
+            return []
+
+        out: list[dict[str, Any]] = []
+        for o in orders:
+            try:
+                out.append(
+                    {
+                        "symbol": str(getattr(o, "symbol", "")),
+                        "side": str(getattr(o, "side", "")),
+                        "qty": int(float(str(getattr(o, "qty", 0) or 0))),
+                        "filled_qty": int(float(str(getattr(o, "filled_qty", 0) or 0))),
+                        "limit_price": _to_decimal(getattr(o, "limit_price", None)),
+                        "filled_avg_price": _to_decimal(getattr(o, "filled_avg_price", None)),
+                        "status": str(getattr(o, "status", "")),
+                        "submitted_at": (
+                            getattr(o, "submitted_at", None).isoformat()
+                            if getattr(o, "submitted_at", None) is not None
+                            else None
+                        ),
+                    }
+                )
+            except (ValueError, AttributeError):
+                continue
+        return out
+
+    async def flatten_symbol(self, symbol: str) -> OrderAck:
+        """Close a single position via Alpaca's close_position (limit-style exit path).
+
+        Used by the mental-stop / exit monitor for a per-symbol full exit.
+        Falls back to a market close internally (Alpaca close_position); acceptable
+        only for emergency exits, same rationale as cancel_all_flatten (U7 relaxed).
+        """
+        client = self._get_client()
+        try:
+            resp = await asyncio.to_thread(client.close_position, symbol)
+            return OrderAck(
+                client_order_id=f"flatten_{symbol}",
+                broker_order_id=str(getattr(resp, "id", "")),
+                accepted=True,
+                status="flatten_submitted",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return OrderAck(
+                client_order_id=f"flatten_{symbol}",
+                broker_order_id=None,
+                accepted=False,
+                status="error",
+                message=str(exc),
+            )
+
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     @staticmethod

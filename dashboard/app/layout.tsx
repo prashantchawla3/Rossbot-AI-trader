@@ -1,13 +1,18 @@
 import type { Metadata } from 'next'
-import { GeistSans } from 'geist/font/sans'
-import { GeistMono } from 'geist/font/mono'
-import { DM_Serif_Display } from 'next/font/google'
+import { DM_Sans, JetBrains_Mono } from 'next/font/google'
 import './globals.css'
 
-const dmSerifDisplay = DM_Serif_Display({
-  weight: '400',
-  style: ['normal', 'italic'],
-  variable: '--font-dm-serif',
+// Pinguo / Apple-inspired type system: DM Sans for UI, JetBrains Mono for data.
+const dmSans = DM_Sans({
+  weight: ['400', '500', '600', '700'],
+  variable: '--font-dm-sans',
+  display: 'swap',
+  subsets: ['latin'],
+})
+
+const jetBrainsMono = JetBrains_Mono({
+  weight: ['400', '500'],
+  variable: '--font-jetbrains',
   display: 'swap',
   subsets: ['latin'],
 })
@@ -22,7 +27,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html
       lang="en"
-      className={`${GeistSans.variable} ${GeistMono.variable} ${dmSerifDisplay.variable}`}
+      className={`${dmSans.variable} ${jetBrainsMono.variable}`}
       suppressHydrationWarning
     >
       <body>{children}</body>

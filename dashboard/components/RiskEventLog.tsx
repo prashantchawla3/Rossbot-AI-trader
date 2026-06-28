@@ -18,11 +18,7 @@ export function RiskEventLog({ events, limit = 30 }: RiskEventLogProps) {
   const visible = events.slice(0, limit)
 
   if (visible.length === 0) {
-    return (
-      <p className="small muted" style={{ textAlign: 'center', padding: '24px 0' }}>
-        No risk events
-      </p>
-    )
+    return <p className="empty-state">No risk events — every safety rule is calm.</p>
   }
 
   return (

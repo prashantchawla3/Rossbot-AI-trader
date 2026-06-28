@@ -7,6 +7,115 @@
 
 ---
 
+## SESSION — Interactive operator console (dashboard rebuild) (2026-06-28)
+
+**Goal:** Turn the read-only dashboard into a full operator console — fix the broken chart, wire
+real data, add controls (pause/resume/flatten/halt, position close/scale/move-stop), an AI
+analysis assistant, manual trading, session config, and a journal — without ever bypassing the
+risk gate.
+
+**Decisions (surfaced 2 guardrail conflicts to the client first; both approved):**
+- **Config editing (U11):** chose the *audited session-override layer* — only AUTO_TRADE,
+  MARKET_STATE, MAX_DAILY_LOSS, SCAN_INTERVAL are runtime-editable via `PATCH /api/config`; every
+  change writes a `CONFIG_OVERRIDE` risk_event. Documented as the U11 exception in spec Appendix A.
+- **Manual trades:** chose *through the risk gate* — `manual_order`/`manual_trade` reuse the demo
+  `_manual_guardrails` (halt/pause/3-strikes/daily-loss) + cushion sizing + liquidity clamp,
+  limit-only (U7). No bypass path was built.
+
+**Built / changed:**
+- `core/demo/engine.py`: operator control methods + effective-config getters + session journal.
+- `adapters/analyzer.py`: Claude `claude-sonnet-4-6` strategy analyzer (verified model id via the
+  claude-api skill); heuristic fallback when ANTHROPIC_API_KEY/SDK absent.
+- `api/routers/operator.py`: ~17 endpoints (bars, scanner, analyze, position controls, manual
+  trade, config GET/PATCH, day controls, journal+CSV). `api/main.py` mounts it; CORS allows PATCH.
+- Frontend rebuilt into 5 tabs (Command / Watchlist+Chart / Positions+Signals / AI Analysis /
+  Journal) with new shared components, glossary tooltips, confirmation modals, and the fixed
+  TradingView embed (dynamic load, MACD/EMA/VWAP, OHLC fallback).
+- `tests/test_dashboard_api.py::TestNoMidSessionParamMutation` rewritten to pin the new contract.
+
+**Findings:**
+- FastAPI 0.138 stores `include_router` results as lazy `_IncludedRouter` objects — `app.routes`
+  no longer flattens sub-routes, so the old U11 route-iteration tests passed trivially. New tests
+  use `app.openapi()["paths"]`. Also: nesting two `/api`-prefixed routers double-prefixes to
+  `/api/api/...` (405) — fixed by per-route `dependencies=[Depends(require_api_key)]` on one router.
+- Pre-existing test failures on this env (NOT from this change): `test_ws_manager` (async harness),
+  `test_alert_fires_on_feed_gap`, and `TestClient.get(content=)` — newer httpx/pytest-asyncio.
+
+**Verified:** dashboard `tsc --noEmit` clean; backend `py_compile` + import clean; new routes
+resolve at runtime (503 when engine off, 403 without API key); U11 contract tests pass.
+
+**Open / next:** install `anthropic` (`pip install -r requirements.txt`) and set `ANTHROPIC_API_KEY`
+for live AI analysis; run the Next.js build (`npm run build`) once deps are installed; consider
+distinct WS event types (position_opened/closed) if finer-grained UI reactions are wanted (today
+everything rides `state_update`/`signal`/`risk_event`).
+
+---
+
+## SESSION — Demo: end-to-end Alpaca paper trading + dashboard (2026-06-28)
+
+**Goal:** Wire Market Data → Scanner → Strategy → Paper Execution → Dashboard on Alpaca paper
+trading for a live demo. Reuse existing modules; do not rewrite what works.
+
+**Built / changed:**
+- Extended the existing Alpaca adapters (additive): broker `get_positions_detailed` /
+  `get_recent_orders` / `flatten_symbol`; data `get_snapshot` / `get_bars` / `get_rvol`.
+- New isolated package `core/demo/`: `config` (env knobs), `universe` (names + float lookup),
+  `state` (frontend-shaped live state + WS broadcast), `engine` (the loop), `wiring` (lifespan).
+- API: `load_dotenv()` before router import; engine started in the FastAPI lifespan (same process
+  → shares WebSocket + respects pause/kill); dashboard router serves the demo state; new
+  `POST /api/demo/test-signal`. `start.sh`/`start.bat`; `.env` demo block; `dashboard/.env.local`.
+
+**Key finding (root wiring gap):** the frontend `dashboard/lib/types.ts` and the backend
+`api/schemas/dashboard.py` had **structurally drifted** (e.g. `risk.day_pnl` vs `realized_pnl`,
+`watchlist_tier_a/b` vs flat `watchlist`, top-level `positions`). Rather than churn the tested
+Phase-5 schemas/StateService, the demo holds its own state in the EXACT frontend shape and the
+router serves that when the engine runs (Phase-5 fallback unchanged for tests).
+
+**Decisions:**
+- Engine runs **in-process** with FastAPI (StateService is per-process in-memory; a separate
+  process couldn't push to the dashboard's WebSocket). Gated by `ROSSBOT_RUN_ENGINE` (tests off).
+- Strategy thresholds from `ConfigService.from_defaults()` / local constants → **no DB, no Redis**
+  needed for the demo. DB logging deferred (Supabase reachability not assumed; `scanner_results`
+  table doesn't exist in the schema — would need a migration).
+- Free **IEX** feed (`require_sip=False`, flagged). E6/L2 bypassed; Pillar-5 catalyst unverified
+  (float from lookup). MARKET_STATE forced HOT. Replay mode keeps the UI alive off-hours.
+
+**Verified (replay mode, server booted on :8000):** `/health` ok; `/api/state` returns the exact
+frontend shape with live tier_a/tier_b/signals/risk/health; `/api/watchlist`, `/api/signals`,
+`/api/risk-events` OK; `POST /api/demo/test-signal` injects; pause/resume/kill-switch (with
+`X-API-Key`) work and `kill-switch` flips `is_halted`. Live Alpaca path smoke-tested with dummy
+keys (constructs, calls SDK, auth failure handled gracefully → empty snapshot, connected=false).
+
+**Open / next:**
+- Needs **real Alpaca paper keys** in `.env` (`ALPACA_API_KEY` / `ALPACA_SECRET_KEY`) for live
+  positions/orders; without them it runs replay/idle. Get free keys at alpaca.markets → Paper.
+- Live E1–E7 signals are rare intraday (honest); demo "action" comes from the real watchlist,
+  replay signals, and the manual test-signal injector.
+- Full pytest suite: **871 passed, 7 failed, 3 skipped (integration)**. The 7 failures are all
+  pre-existing env/version issues, NOT the demo: 6 are Python-3.13 `asyncio.get_event_loop()`
+  deprecation + cross-test event-loop pollution in `test_ws_manager`/alert (they pass in
+  isolation — 8/8); 1 is `test_state_endpoint_has_no_body_params` calling `client.get(content=)`
+  which httpx 0.28 no longer allows on GET. The conftest key-pin actually **fixed** 5
+  control-auth tests that the earlier `.env`/`db.base.load_dotenv` ordering had broken.
+- Future: persist `scanner_results`/`signals` to DB (needs a migration), SIP feed, real catalyst.
+
+**Addendum (later same day) — live paper verification + bars/RVOL fix:**
+- Real Alpaca paper keys are now in `.env` (UTF-8-BOM file; `python-dotenv` reads it). Verified
+  live against the paper account: broker reachable (equity $100k / BP $400k / 0 positions,
+  `day_trade_count=0`, `pdt_restricted=False`); `get_snapshot(['AAPL','TSLA','NVDA'])` returns
+  real IEX prices + change% + volume.
+- **Bug fixed in `adapters/alpaca.py`:** `get_bars()`/`get_rvol()` omitted the `start` window →
+  IEX historical returned **0 bars / RVOL `None`** (Pillar-3 could never pass → demo couldn't
+  trade). Now sends a timeframe-sized `start`/`end` window and slices the newest `limit` bars.
+  Re-verified: 10 bars (last Fri 2026-06-26), `get_rvol('AAPL')=3.27`. 34 adapter/bars tests pass.
+- Decision (asked operator): **enhance existing typed adapters**, do NOT add parallel dict-based
+  `alpaca_broker_adapter.py`/`alpaca_data_adapter.py`; **keep existing endpoints** (`/api/state`,
+  `/api/positions`, `/controls/*`) — the Next.js dashboard already consumes them.
+- Note: off-hours IEX quotes can have `ask=0` (one-sided); E7 spread gate fail-safe-rejects it.
+  Live E1–E7 entries should be validated Mon during the 07:00–11:00 ET window.
+
+---
+
 ## SESSION — Infra: remove Docker, move DB to Supabase (2026-06-27)
 
 **Goal:** Run the full project on Windows without Docker. PostgreSQL → Supabase (hosted free tier),

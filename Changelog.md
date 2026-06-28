@@ -2,6 +2,122 @@
 
 All notable changes per CLAUDE.md §11.4. Format: reverse-chronological, one entry per phase/change.
 
+## [UI+API] Interactive operator console — chart, controls, AI analysis, journal — 2026-06-28
+
+Rebuilt the read-only dashboard into a 5-tab interactive operator console. The risk gate is
+never bypassed: manual trades route through `DemoEngine.manual_trade`/`manual_order` (U4/U5/U7),
+and config edits are limited to four audited keys (client-approved U11 exception — see spec
+Appendix A).
+
+**Backend**
+- `core/demo/engine.py`: operator methods — `trigger_scan`, `get_bars_payload`, `close_position`,
+  `scale_out_position`, `move_stop`, `manual_order`/`manual_trade` (through the risk gate),
+  `flatten_all`, `halt_day`; audited session-override layer (`set_override` + `effective_*`
+  getters for AUTO_TRADE / MARKET_STATE / MAX_DAILY_LOSS / SCAN_INTERVAL, each writing a
+  `CONFIG_OVERRIDE` risk_event); completed-trade journal (`journal_today`, `session_summary`).
+- `adapters/analyzer.py`: `StrategyAnalyzer` — Claude `claude-sonnet-4-6` symbol verdict
+  (pillars/gates/suggested-trade JSON) with a deterministic heuristic fallback when no key.
+- `api/routers/operator.py`: new endpoints under `/api` — `bars/{symbol}`, `scanner/trigger`,
+  `analyze/{symbol}`, `positions/{symbol}/{close,scale-out,stop}`, `trade/{manual,manual-order}`,
+  `config` (GET + audited PATCH), `control/{flatten,pause,resume,halt-day}`,
+  `journal/{today,session-summary,export}`. Mutations require `X-API-Key`.
+- `api/main.py`: mounted the operator router; CORS now allows `PATCH` (audited config only).
+- `requirements.txt` / `pyproject.toml`: added `anthropic` (lazy-imported; fails safe).
+- `tests/test_dashboard_api.py`: U11 tests rewritten to pin the new audited-override contract
+  (PATCH only on `/api/config`, POST allowlist, auth-gated) using the OpenAPI schema.
+
+**Frontend (dashboard/)**
+- Fixed the TradingView chart: `components/TradingViewChart.tsx` dynamically loads `tv.js`
+  (hydration-safe, `ssr:false`) with 1-min candles + MACD/EMA/VWAP, and falls back to a
+  Lightweight OHLC table from `/api/bars/{symbol}` if blocked.
+- 5 tabs: Command Center, Watchlist+Chart, Positions+Signals, AI Analysis, Journal+History.
+- New components: `StatusBar`, `BotControls` (+ session config), `RiskGauge`, `PillarDots`,
+  `PositionControls`, `ConfirmModal`, `Term`/glossary tooltips, `useChartSymbol` context.
+- `lib/api.ts` + `lib/types.ts`: typed clients for every new endpoint.
+- Confirmation modals on flatten/halt/close; `?`-tooltips on every technical term;
+  CSV journal export; plain-English rules accordion.
+
+## [UI] Dashboard redesign — Apple/Pinguo design system, top-bar nav, tooltips — 2026-06-28
+
+Full visual redesign of the Next.js dashboard to make it understandable to a non-technical
+client. No backend/strategy/risk logic changed; data flow (REST + live WebSocket) is untouched.
+
+- **Design system swapped to the Apple/Pinguo tokens.** Copied the full token set from the
+  `Apple/` bundle (`colors_and_type.css`) into `dashboard/app/globals.css` — Apple System Blue
+  brand ramp, neutral surface ramp, System Green/Red states, `1.2rem` radius, whisper-light
+  shadows. The `Apple/` source folder is no longer referenced and can be deleted.
+- **Fonts → DM Sans (UI) + JetBrains Mono (numbers/data)** via `next/font/google`
+  (`dashboard/app/layout.tsx`); replaced Geist. `PnLChart` chart font updated to JetBrains Mono.
+- **Navigation moved from sidebar to a top bar.** New `components/TopNav.tsx` (Apple-store dark
+  rail, pill links, horizontally scrollable on mobile) replaces `components/Sidebar.tsx`
+  (deleted). `(dashboard)/layout.tsx` is now a stacked `app-shell` (top bar + centered content).
+- **Live indicator surfaced** in the top bar: a status pill with a pulsing dot showing
+  Live / Connecting / Offline / Paused / Halted, driven by WS connection + risk state.
+- **Tooltips + plain-language hints everywhere.** New `components/Tooltip.tsx` (`Tooltip` +
+  `InfoHint` ⓘ icon, hover/focus/tap). Added hints to every metric, table header, panel title,
+  nav item, and the kill switch; rewrote page intros in plain English; Signal feed now renders
+  human-readable detail instead of raw JSON.
+- **Mobile responsive.** Top bar wraps with a scrollable nav rail; metric grid collapses
+  4→2→1; content grids stack; all tables wrapped in `.table-wrap` for horizontal scroll.
+- Verified: `tsc --noEmit` clean and `next build` succeeds (also fixed two pre-existing
+  `lightweight-charts` type errors in `PnLChart.tsx`).
+
+## [Fix] Alpaca historical bars/RVOL required a `start` window (IEX) — 2026-06-28
+
+`adapters/alpaca.py` `get_bars()` (and therefore `get_rvol()`, which builds on it) called the
+Alpaca historical REST API with `limit=` but **no `start`**. Verified against the live paper
+account (2026-06): on the free **IEX** feed, omitting `start` returns an **empty** bar set —
+daily bars → 0 rows → RVOL always `None` → Pillar-3 never passes → no Tier-B candidates → the
+demo could never actually take a trade. Intraday bars were likewise empty.
+
+- `get_bars()` now sends a `start`/`end` window sized by timeframe and `limit` (daily:
+  `limit*2 + 14` calendar days; intraday: 5 days to reach back across a weekend to the last live
+  session), then slices the newest `limit` bars (Alpaca returns oldest→newest for a window).
+- Verified live: `get_bars('AAPL', '1Min', 10)` → 10 bars (last = Fri 2026-06-26);
+  `get_rvol('AAPL')` → 3.27 (was `None`). 34 adapter/bars/live-adapter tests still pass.
+- No new files, no API/architecture change (per session decision: enhance existing typed
+  adapters rather than add parallel dict-based modules). spec §1 Pillar-3 / §2 MACD.
+
+## [Demo] End-to-end Alpaca paper-trading loop + dashboard wiring — 2026-06-28
+
+Made the system run end-to-end on **Alpaca paper trading** for a live demo. Additive and
+isolated under `core/demo/`; the production strategy/risk modules are untouched. Every demo
+simplification is surfaced in the UI.
+
+- **Alpaca adapters extended (additive, ABC untouched):**
+  - `adapters/alpaca_broker.py` — `get_positions_detailed()` (live P&L), `get_recent_orders()`,
+    `flatten_symbol()` for per-symbol exits.
+  - `adapters/alpaca.py` — `get_snapshot()` (batch gainers), `get_bars()`, `get_rvol()` for the
+    REST polling scanner/strategy path.
+- **`core/demo/` (new):**
+  - `config.py` — `DemoConfig.from_env()`: Alpaca creds + demo knobs (AUTO_TRADE, E6_ENABLED,
+    MARKET_STATE, DEMO_REPLAY_MODE, MAX_DAILY_LOSS, sizing, intervals). No DB/Redis needed.
+  - `universe.py` — ~120 low-float momentum names + hard-coded float lookup (UNKNOWN → excluded
+    from Tier B, fail-safe per §1 Pillar-2).
+  - `state.py` — `DemoDashboardState`: live state in the EXACT shape `dashboard/lib/types.ts`
+    expects; broadcasts over the existing `/ws/live` WebSocket.
+  - `engine.py` — `DemoEngine`: snapshot → Tier-A wide net (§1) → Tier-B Five-Pillars gate →
+    entry gate E1–E7 (§2, **E6 bypassed** — Alpaca has no L2) → demo risk gate (§5,
+    3-strikes / daily-loss / cushion / entry-window) → Alpaca paper order (§10 limit+offset) →
+    exit monitor P1/P2/P5 (§3). Forces MARKET_STATE=HOT. Replay mode animates the dashboard
+    when the market is closed. Reuses `core.indicators.macd` for E4.
+  - `wiring.py` — starts/stops the engine inside the FastAPI lifespan; registers the engine's
+    halt+flatten hook for the kill-switch.
+- **API wiring:**
+  - `api/main.py` — `load_dotenv()` before router import (so `DASHBOARD_API_KEY`/Alpaca keys load);
+    `start_demo()/stop_demo()` in the lifespan; WS initial snapshot prefers the demo state.
+  - `api/routers/dashboard.py` — endpoints serve `app.state.demo_state` (frontend shape) when the
+    engine runs; added `POST /api/demo/test-signal` for the demo checklist.
+- **Config/scripts:** `.env` demo block + `DASHBOARD_API_KEY=rossbot-demo-key`;
+  `dashboard/.env.local` (NEXT_PUBLIC_API_URL/WS_URL/API_KEY); `start.sh` + `start.bat`
+  (use `.venv`, not the stale `venv\`); `requirements.txt` uncomments `alpaca-py>=0.43.4`.
+- **Tests:** `tests/conftest.py` sets `ROSSBOT_RUN_ENGINE=false` so the loop stays out of the
+  test lifespan.
+
+DEMO SIMPLIFICATIONS (flagged in UI): E6/L2 bypassed (no Alpaca depth), Pillar-5 catalyst not
+verified (hard-coded float lookup instead), MARKET_STATE forced HOT, free IEX feed
+(`require_sip=False`), mental-stop poll every ~5s. None weaken the production guardrails.
+
 ## [Infra] Remove Docker dependency → Supabase (local no-Docker dev) — 2026-06-27
 
 Infrastructure-only change so the project runs on Windows without Docker; PostgreSQL moves to

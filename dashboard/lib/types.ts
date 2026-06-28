@@ -32,7 +32,94 @@ export interface WatchlistEntry {
   float_shares: number | null
   catalyst: string | null
   pillar_flags: Record<string, boolean>
+  change_pct?: string | null
   last_updated: string
+}
+
+// ── Operator console additions ──────────────────────────────────────────────
+
+export interface Bar {
+  time: number
+  open: string
+  high: string
+  low: string
+  close: string
+  volume: number
+}
+
+export interface SessionConfig {
+  AUTO_TRADE: boolean
+  MARKET_STATE: 'HOT' | 'COLD' | 'REHAB'
+  MAX_DAILY_LOSS: string
+  SCAN_INTERVAL: number
+  overridden: string[]
+}
+
+export interface PillarCell {
+  pass: boolean | null
+  value?: string
+  rule?: string
+  note?: string
+}
+
+export interface GateCell {
+  pass: boolean | null
+  note?: string
+}
+
+export interface SuggestedTrade {
+  action: string
+  entry_price: number
+  stop_price: number
+  risk_per_share: number
+  suggested_shares: number
+  target_1: number
+  target_2: number
+  risk_reward: number
+  pattern: string
+  conviction: string
+}
+
+export interface AnalyzeVerdict {
+  symbol: string
+  would_ross_trade: boolean
+  confidence: number
+  verdict_summary: string
+  pillars: Record<string, PillarCell>
+  entry_gates: Record<string, GateCell>
+  suggested_trade: SuggestedTrade | null
+  warnings: string[]
+  ross_would_say: string
+  source: string
+  market_data?: Record<string, unknown>
+}
+
+export interface JournalTrade {
+  symbol: string
+  side: string
+  entry_price: string
+  exit_price: string
+  shares: number
+  pnl: string
+  r_multiple: number | null
+  exit_reason: string
+  entry_ts: string
+  exit_ts: string
+}
+
+export interface SessionSummary {
+  trades: number
+  wins: number
+  losses: number
+  win_rate: number | null
+  avg_winner: string
+  avg_loser: string
+  profit_factor: number | null
+  best_trade: string
+  worst_trade: string
+  realized_pnl: string
+  consecutive_losses: number
+  rules_violated: number
 }
 
 export interface SignalEvent {

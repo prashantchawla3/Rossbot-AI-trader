@@ -2,142 +2,167 @@
 
 import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
-import type { SessionJournal } from '@/lib/types'
-import { Badge } from '@/components/Badge'
+import { MetricCard } from '@/components/MetricCard'
+import type { JournalTrade, SessionSummary } from '@/lib/types'
 
-function pnlColor(pnl: string) {
-  const n = parseFloat(pnl)
-  if (n > 0) return 'var(--success)'
-  if (n < 0) return 'var(--destructive)'
-  return 'inherit'
-}
+const RULES: { q: string; a: string }[] = [
+  {
+    q: 'What is Tier A vs Tier B?',
+    a: 'Tier A is the wide net — stocks moving enough to watch. Tier B has passed all 5 of Ross’s Five Pillars and is the only kind the bot will trade.',
+  },
+  {
+    q: 'Why did the bot not trade that symbol?',
+    a: 'Every entry is an AND-gate of E1–E7. If any one fails — most commonly E4 (MACD not positive) or a missing catalyst (P5) — the trade is skipped. The Signals feed shows exactly which gate failed.',
+  },
+  {
+    q: 'What is RVOL?',
+    a: 'Relative Volume — today’s volume vs the 50-day average. 5x means five times normal activity. Ross requires ≥5x (Pillar P3).',
+  },
+  {
+    q: 'What is the 3-strikes rule?',
+    a: 'Three consecutive losing trades ends trading for the day. It stops a bad streak from compounding (spec U5).',
+  },
+  {
+    q: 'What is a mental stop?',
+    a: 'The bot tracks the stop price internally and exits if it breaks — it never places a resting stop order with the broker, because market makers hunt visible stops (spec U13).',
+  },
+  {
+    q: 'What is the cushion / icebreaker size?',
+    a: 'While the day’s P&L is negative, position size is cut to about a quarter of normal. The bot only sizes up once it’s green for the day (spec §5).',
+  },
+  {
+    q: 'What is the daily loss limit / give-back?',
+    a: 'If the day P&L drops below the limit, or gives back 50% of the peak profit, the bot halts for the day (spec U4).',
+  },
+]
 
 export default function JournalPage() {
-  const [journal, setJournal] = useState<SessionJournal | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [trades, setTrades] = useState<JournalTrade[]>([])
+  const [summary, setSummary] = useState<SessionSummary | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const [openRule, setOpenRule] = useState<number | null>(null)
 
   useEffect(() => {
-    api.getJournal()
-      .then(setJournal)
-      .catch((err: unknown) => setError(String(err)))
+    Promise.all([api.journalToday(), api.sessionSummary()])
+      .then(([j, s]) => {
+        setTrades(j.trades)
+        setSummary(s)
+      })
+      .catch((e) => setErr(String(e)))
   }, [])
 
-  if (error) {
-    return (
-      <div className="view">
-        <div className="topbar">
-          <h1 style={{ margin: 0, fontSize: '1.5rem', fontWeight: 600 }}>Journal</h1>
-        </div>
-        <div className="card">
-          <p className="small muted">Could not load journal: {error}</p>
-        </div>
-      </div>
-    )
-  }
-
-  if (!journal) {
-    return (
-      <div className="view">
-        <div className="topbar">
-          <h1 style={{ margin: 0, fontSize: '1.5rem', fontWeight: 600 }}>Journal</h1>
-        </div>
-        <div className="card">
-          <p className="small muted">Loading...</p>
-        </div>
-      </div>
-    )
-  }
-
-  const totalPnl = parseFloat(journal.total_pnl)
+  const today = new Date().toLocaleDateString('en-US', { dateStyle: 'long' })
 
   return (
     <div className="view">
-      <div className="topbar">
+      <div className="page-head">
         <div>
-          <h1 style={{ margin: 0, fontSize: '1.5rem', fontWeight: 600, letterSpacing: '-0.012em' }}>
-            Session Journal
-          </h1>
-          <p className="small muted" style={{ marginTop: '4px' }}>
-            {journal.date} — post-session trade report
-          </p>
+          <h1>Journal &amp; History</h1>
+          <p className="muted">{today} — today’s completed trades and the session summary.</p>
+        </div>
+        <div className="head-actions">
+          <a className="btn btn-primary btn-sm" href={api.journalExportUrl()}>
+            📥 Export CSV
+          </a>
         </div>
       </div>
 
-      {/* Session summary */}
-      <div className="metrics-grid">
-        <div className="metric-card">
-          <span className="eyebrow">Total P&L</span>
-          <span
-            className="metric-value"
-            style={{ color: pnlColor(journal.total_pnl) }}
-          >
-            ${journal.total_pnl}
-          </span>
-        </div>
-        <div className="metric-card" style={{ borderLeft: '1px solid var(--color-border)' }}>
-          <span className="eyebrow">Win Rate</span>
-          <span className="metric-value">
-            {journal.win_rate}
-          </span>
-          <span className="kpi-delta">{journal.num_wins}W / {journal.num_losses}L</span>
-        </div>
-        <div className="metric-card" style={{ borderLeft: '1px solid var(--color-border)' }}>
-          <span className="eyebrow">Max Drawdown</span>
-          <span className="metric-value negative">{journal.max_drawdown}</span>
-        </div>
-        <div className="metric-card" style={{ borderLeft: '1px solid var(--color-border)' }}>
-          <span className="eyebrow">Trades</span>
-          <span className="metric-value">{journal.trades.length}</span>
-        </div>
-      </div>
+      {err && <p className="error-text">{err}</p>}
 
-      {/* Trade table */}
-      <div className="card">
-        <div className="panel-title">
-          <div>
-            <h3>Trade Log</h3>
-            <p className="support">All fills for the session</p>
+      {summary && (
+        <div className="metrics-grid">
+          <MetricCard
+            label="Win Rate"
+            value={summary.win_rate !== null ? `${Math.round(summary.win_rate * 100)}%` : '—'}
+            hint="≥60% over 10 sim days is the gate for live trading (U6)."
+          />
+          <MetricCard
+            label="Profit Factor"
+            value={summary.profit_factor !== null ? summary.profit_factor.toFixed(2) : '—'}
+            hint="Gross wins ÷ gross losses. Above 1.0 is profitable."
+          />
+          <MetricCard label="Avg Winner" value={`$${summary.avg_winner}`} sentiment="positive" />
+          <MetricCard label="Avg Loser" value={`$${summary.avg_loser}`} sentiment="negative" />
+        </div>
+      )}
+
+      {summary && (
+        <div className="card session-summary">
+          <div className="ss-grid">
+            <span>Trades <b>{summary.trades}</b></span>
+            <span>Wins <b className="pos">{summary.wins}</b></span>
+            <span>Losses <b className="neg">{summary.losses}</b></span>
+            <span>Best <b className="pos">${summary.best_trade}</b></span>
+            <span>Worst <b className="neg">${summary.worst_trade}</b></span>
+            <span>Realized P&L <b className={Number(summary.realized_pnl) >= 0 ? 'pos' : 'neg'}>${summary.realized_pnl}</b></span>
+            <span>Rules Violated <b>{summary.rules_violated}</b></span>
           </div>
         </div>
-        <table className="table">
+      )}
+
+      <div className="card">
+        <header className="card-head">
+          <h3>Today’s Trade Journal</h3>
+          <span className="muted small">{trades.length} trades</span>
+        </header>
+        <table className="table compact">
           <thead>
             <tr>
               <th>Symbol</th>
               <th>Side</th>
-              <th>Shares</th>
               <th>Entry</th>
               <th>Exit</th>
-              <th>Realised P&L</th>
-              <th>Spec Refs</th>
+              <th>Shares</th>
+              <th>P&L</th>
+              <th>R</th>
+              <th>Exit Reason</th>
             </tr>
           </thead>
           <tbody>
-            {journal.trades.map((t, i) => (
-              <tr key={i}>
-                <td><strong>{t.symbol}</strong></td>
-                <td>
-                  <Badge variant={t.side === 'long' ? 'success' : 'warn'}>{t.side}</Badge>
+            {trades.length === 0 && (
+              <tr>
+                <td colSpan={8} className="muted">
+                  No completed trades yet today.
                 </td>
-                <td className="mono">{t.shares.toLocaleString()}</td>
-                <td className="mono">${t.entry_price}</td>
-                <td className="mono">{t.exit_price ? `$${t.exit_price}` : '—'}</td>
-                <td>
-                  <span
-                    className="mono"
-                    style={{ color: pnlColor(t.realised_pnl) }}
-                  >
-                    ${t.realised_pnl}
-                  </span>
-                </td>
-                <td className="small muted">{t.spec_refs.join(', ') || '—'}</td>
               </tr>
-            ))}
+            )}
+            {trades.map((t, i) => {
+              const pnl = Number(t.pnl)
+              return (
+                <tr key={i} className={pnl >= 0 ? 'row-win' : 'row-loss'}>
+                  <td className="mono strong">{t.symbol}</td>
+                  <td>{t.side}</td>
+                  <td className="mono">${t.entry_price}</td>
+                  <td className="mono">${t.exit_price}</td>
+                  <td className="mono">{t.shares}</td>
+                  <td className={`mono ${pnl >= 0 ? 'pos' : 'neg'}`}>
+                    {pnl >= 0 ? '+' : '-'}${Math.abs(pnl).toFixed(2)}
+                  </td>
+                  <td className="mono">{t.r_multiple !== null ? `${t.r_multiple}R` : '—'}</td>
+                  <td className="small">{t.exit_reason}</td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
+      </div>
 
-        <p className="footnote">
-          Generated {new Date(journal.generated_at).toLocaleString('en-US', { timeZone: 'America/New_York' })} ET
-        </p>
+      <div className="card">
+        <header className="card-head">
+          <h3>Bot Rules Reference</h3>
+          <span className="muted small">plain-English</span>
+        </header>
+        <div className="accordion">
+          {RULES.map((r, i) => (
+            <div key={i} className={`acc-item ${openRule === i ? 'open' : ''}`}>
+              <button className="acc-head" onClick={() => setOpenRule(openRule === i ? null : i)}>
+                <span>{r.q}</span>
+                <span>{openRule === i ? '▾' : '▸'}</span>
+              </button>
+              {openRule === i && <p className="acc-body">{r.a}</p>}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   )

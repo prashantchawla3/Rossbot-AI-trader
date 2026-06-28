@@ -31,6 +31,11 @@ ntplib>=0.4.0
 # --- tz database (required on Windows; stdlib zoneinfo has no bundled db there) ---
 tzdata>=2026.1
 
-# --- Phase 1+ market-data vendor SDKs (optional; uncomment when wiring adapters) ---
-# alpaca-py>=0.43.4
-# databento>=0.80.0
+# --- Market-data / broker vendor SDK (Alpaca paper trading — demo + Phase 6) ---
+alpaca-py>=0.43.4
+# databento>=0.80.0           # full L2 depth (Phase 8); not used in the Alpaca demo
+
+# --- Claude API (catalyst classifier §13.1 + dashboard AI analyzer) ---
+# Lazy-imported in adapters/catalyst/llm_classifier.py and adapters/analyzer.py;
+# both fail safe to a heuristic if the key/SDK is missing. Needs ANTHROPIC_API_KEY.
+anthropic>=0.49.0

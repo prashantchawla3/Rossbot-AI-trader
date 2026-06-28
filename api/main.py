@@ -24,7 +24,19 @@ from typing import Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routers import controls, dashboard, health
+# Load .env BEFORE importing routers/auth (api.auth reads DASHBOARD_API_KEY at import).
+# Skipped under pytest so tests control the environment (they set DASHBOARD_API_KEY themselves).
+import sys as _sys
+
+if "pytest" not in _sys.modules:
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except Exception:  # noqa: BLE001 — dotenv is optional
+        pass
+
+from api.routers import controls, dashboard, health, operator
 from api.services.alert_service import AlertService, AlertSeverity
 from api.services.health_service import HealthService, _HEALTH_POLL_S
 from api.services.state_service import StateService
@@ -56,8 +68,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         _health_loop(ws_manager, state_svc, health_svc, alert_svc)
     )
 
+    # Phase-6 demo: start the Alpaca paper trading loop in-process (shares ws + state).
+    from core.demo.wiring import start_demo, stop_demo
+
+    await start_demo(app)
+
     yield
 
+    await stop_demo(app)
     health_task.cancel()
     try:
         await health_task
@@ -113,11 +131,15 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[_DASHBOARD_ORIGIN],
     allow_credentials=True,
-    allow_methods=["GET", "POST"],  # no PATCH/PUT/DELETE/OPTIONS mutation — U11
+    # GET/POST for the read + control surface; PATCH is allowed ONLY for the audited
+    # session-config override layer (4 keys, every change logged) — the client-approved
+    # U11 dashboard-override exception. See ROSSBOT_STRATEGY_SPEC.md Appendix A.
+    allow_methods=["GET", "POST", "PATCH"],
     allow_headers=["*"],
 )
 
 app.include_router(dashboard.router)
+app.include_router(operator.router)
 app.include_router(controls.router)
 app.include_router(health.router)
 
@@ -143,12 +165,13 @@ async def ws_live(websocket: WebSocket) -> None:
     await ws_manager.connect(websocket)
 
     try:
-        initial = state_svc.get_state()
+        demo_state = getattr(websocket.app.state, "demo_state", None)
+        if demo_state is not None:
+            payload = demo_state.to_state()
+        else:
+            payload = state_svc.get_state().model_dump(mode="json")
         await websocket.send_text(
-            json.dumps(
-                {"type": "state_update", "payload": initial.model_dump(mode="json")},
-                default=str,
-            )
+            json.dumps({"type": "state_update", "payload": payload}, default=str)
         )
     except Exception:  # noqa: BLE001
         ws_manager.disconnect(websocket)
