@@ -13,6 +13,7 @@ import type {
   JournalTrade,
   SessionSummary,
   AccountState,
+  SymbolNews,
 } from './types'
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
@@ -58,6 +59,7 @@ export const api = {
   getConfig: () => apiFetch<SessionConfig>('/api/config'),
   getAccount: () => apiFetch<AccountState>('/api/account'),
   getModels: () => apiFetch<ModelsCatalog>('/api/models'),
+  getNews: (symbol: string) => apiFetch<SymbolNews>(`/api/news/${symbol}`),
   analyze: (symbol: string, provider?: string, model?: string) => {
     const qs = new URLSearchParams()
     if (provider) qs.set('provider', provider)

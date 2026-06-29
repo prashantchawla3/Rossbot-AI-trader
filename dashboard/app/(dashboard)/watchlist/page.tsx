@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import { useEffect, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
@@ -7,7 +7,7 @@ import { useChartSymbol } from '@/hooks/useChartSymbol'
 import { api } from '@/lib/api'
 import { PillarDots } from '@/components/PillarDots'
 import { Term } from '@/components/Term'
-import type { WatchlistEntry } from '@/lib/types'
+import type { WatchlistEntry, SymbolNews } from '@/lib/types'
 
 // TradingView injects DOM directly — load client-only to avoid hydration mismatch.
 const TradingViewChart = dynamic(
@@ -35,6 +35,9 @@ export default function WatchlistPage() {
   const [scanMsg, setScanMsg] = useState<string | null>(null)
   const [addInput, setAddInput] = useState('')
   const lastSignalId = useRef<string | null>(null)
+  const [newsData, setNewsData] = useState<SymbolNews | null>(null)
+  const [newsLoading, setNewsLoading] = useState(false)
+  const prevSymbolRef = useRef<string | null>(null)
 
   // Auto-update the chart when a new entry signal fires (Tier B trigger).
   useEffect(() => {
@@ -44,6 +47,18 @@ export default function WatchlistPage() {
       setSymbol(latest.symbol)
     }
   }, [signals, setSymbol])
+
+  // Fetch news/catalyst data whenever the selected symbol changes.
+  useEffect(() => {
+    if (!symbol || symbol === prevSymbolRef.current) return
+    prevSymbolRef.current = symbol
+    setNewsData(null)
+    setNewsLoading(true)
+    api.getNews(symbol)
+      .then((data) => setNewsData(data))
+      .catch(() => setNewsData(null))
+      .finally(() => setNewsLoading(false))
+  }, [symbol])
 
   async function scanNow() {
     setScanMsg('Scanning…')
@@ -107,6 +122,9 @@ export default function WatchlistPage() {
                 <th>
                   <Term term="Float">Float</Term>
                 </th>
+                <th>
+                  <Term term="Catalyst">Catalyst</Term>
+                </th>
                 <th>Tier</th>
                 <th>Pillars</th>
                 <th></th>
@@ -115,8 +133,8 @@ export default function WatchlistPage() {
             <tbody>
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="muted">
-                    No symbols on the watchlist yet — the scanner runs on a cadence, or press “Scan Now”.
+                  <td colSpan={9} className="muted">
+                    No symbols on the watchlist yet — the scanner runs on a cadence, or press "Scan Now".
                   </td>
                 </tr>
               )}
@@ -133,6 +151,30 @@ export default function WatchlistPage() {
                   </td>
                   <td className="mono">{e.rvol}</td>
                   <td>{floatLabel(e.float_shares)}</td>
+                  <td>
+                    {e.catalyst ? (
+                      <span
+                        className={`small ${
+                          e.catalyst.startsWith('VERIFIED')
+                            ? 'pos'
+                            : e.catalyst.startsWith('SKIP')
+                            ? 'neg'
+                            : 'muted'
+                        }`}
+                        title={e.catalyst}
+                      >
+                        {e.catalyst.startsWith('VERIFIED:')
+                          ? e.catalyst.replace('VERIFIED:', '✓ ')
+                          : e.catalyst.startsWith('UNVERIFIED:')
+                          ? e.catalyst.replace('UNVERIFIED:', '– ')
+                          : e.catalyst.startsWith('SKIP:')
+                          ? e.catalyst.replace('SKIP:', '✗ ')
+                          : e.catalyst}
+                      </span>
+                    ) : (
+                      <span className="small muted">—</span>
+                    )}
+                  </td>
                   <td>
                     <span className={`badge tier-badge tier-${e.tier.toLowerCase()}`}>{e.tier}</span>
                   </td>
@@ -175,7 +217,58 @@ export default function WatchlistPage() {
                 — <strong className={viewedSignal.action === 'veto' ? 'neg' : 'pos'}>{viewedSignal.event_type}</strong>
               </p>
             ) : (
-              <p className="muted small">No recent signal for {symbol}. Click a watchlist row to inspect.</p>
+              <p className="muted small">No signal for {symbol} yet this session.</p>
+            )}
+          </div>
+
+          {/* Catalyst / News panel */}
+          <div className="card">
+            <h4 style={{ marginBottom: '8px' }}>
+              Catalyst &amp; News — {symbol}
+            </h4>
+            {newsLoading && <p className="muted small">Fetching news…</p>}
+            {!newsLoading && !newsData && (
+              <p className="muted small">Select a symbol to load news.</p>
+            )}
+            {newsData && (
+              <>
+                <div
+                  className={`small ${
+                    newsData.catalyst_result.status === 'VERIFIED'
+                      ? 'pos'
+                      : newsData.catalyst_result.status === 'SKIP'
+                      ? 'neg'
+                      : 'muted'
+                  }`}
+                  style={{ marginBottom: '8px', fontWeight: 600 }}
+                >
+                  {newsData.catalyst_result.status === 'VERIFIED' && '✓ VERIFIED'}
+                  {newsData.catalyst_result.status === 'SKIP' && '✗ SKIP (blocked)'}
+                  {newsData.catalyst_result.status === 'UNVERIFIED' && '– UNVERIFIED'}
+                  {newsData.catalyst_result.type && newsData.catalyst_result.type !== 'none' && (
+                    <span className="muted" style={{ fontWeight: 400 }}>
+                      {' '}· {newsData.catalyst_result.type.replace(/_/g, ' ')}
+                    </span>
+                  )}
+                  <span className="muted" style={{ fontWeight: 400, marginLeft: '6px', fontSize: '0.72rem' }}>
+                    ({newsData.catalyst_result.reason})
+                  </span>
+                </div>
+                {newsData.recent_news.length === 0 ? (
+                  <p className="muted small">No recent news in the last 60 min.</p>
+                ) : (
+                  <div className="list" style={{ gap: '6px' }}>
+                    {newsData.recent_news.map((item, i) => (
+                      <div key={i} style={{ borderBottom: '1px solid var(--border)', paddingBottom: '6px' }}>
+                        <p className="small" style={{ margin: 0, lineHeight: '1.35' }}>{item.headline}</p>
+                        <p className="small muted" style={{ margin: '2px 0 0', fontSize: '0.7rem', fontFamily: 'var(--font-mono)' }}>
+                          {item.source} · {new Date(item.created_at).toLocaleTimeString('en-US', { hour12: false })}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>

@@ -230,8 +230,37 @@ export interface DashboardState {
   health: HealthOut
 }
 
+export interface NewsItem {
+  headline: string
+  created_at: string
+  source: string
+  summary: string
+}
+
+export interface CatalystResult {
+  status: 'VERIFIED' | 'SKIP' | 'UNVERIFIED'
+  type: string
+  reason: string
+}
+
+export interface SymbolNews {
+  symbol: string
+  catalyst_result: CatalystResult
+  recent_news: NewsItem[]
+}
+
+export interface CatalystUpdateEvent {
+  symbol: string
+  status: 'VERIFIED' | 'SKIP' | 'UNVERIFIED'
+  catalyst_type: string
+  reason: string
+  headline: string
+  source: string
+  created_at: string
+}
+
 export interface WsMessage {
-  type: 'state_update' | 'signal' | 'risk_event' | 'pong'
+  type: 'state_update' | 'signal' | 'risk_event' | 'pong' | 'catalyst_update'
   payload: unknown
 }
 

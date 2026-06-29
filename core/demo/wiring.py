@@ -36,11 +36,17 @@ async def start_demo(app) -> None:  # noqa: ANN001 — FastAPI app
         ws_manager = app.state.ws_manager
         svc = app.state.svc
 
+        # Inject the live catalyst verifier (wired in api/main.py lifespan).
+        # Falls back to None when the news stream isn't available; the engine
+        # handles that gracefully (P5 stays UNVERIFIED).
+        catalyst_verifier = getattr(app.state, "catalyst_verifier", None)
+
         demo_state = DemoDashboardState(broadcast=ws_manager.broadcast_json)
         engine = DemoEngine(
             cfg,
             demo_state,
             connection_count=lambda: ws_manager.connection_count,
+            catalyst_verifier=catalyst_verifier,
         )
         engine.set_control_hooks(lambda: svc.paused, lambda: svc.halted)
         engine.connect()

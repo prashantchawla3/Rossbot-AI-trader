@@ -34,6 +34,7 @@ from core.demo.config import DemoConfig
 from core.demo.state import DemoDashboardState, _s
 from core.demo.universe import STARTER_UNIVERSE, float_for
 from core.indicators import macd, macd_positive
+from core.news.catalyst_verifier import CatalystVerifier
 from core.timeutils import Session, et_time, now_utc, session_for
 
 log = logging.getLogger(__name__)
@@ -108,11 +109,14 @@ class DemoEngine:
         state: DemoDashboardState,
         *,
         connection_count: Any = None,
+        catalyst_verifier: CatalystVerifier | None = None,
     ) -> None:
         self.cfg = cfg
         self.state = state
         # callable returning current ws client count (ws_manager.connection_count)
         self._connection_count = connection_count
+        # Live catalyst verifier (core.news); None → demo falls back to UNVERIFIED
+        self._catalyst_verifier = catalyst_verifier
 
         self.broker: AlpacaBrokerAdapter | None = None
         self.data: AlpacaMarketDataAdapter | None = None
@@ -297,7 +301,35 @@ class DemoEngine:
             p2 = flt is not None and flt <= TIER_B_FLOAT_MAX
             p3 = rvol is not None and rvol >= TIER_B_RVOL_MIN
             p4 = change >= TIER_B_CHANGE_MIN
-            p5 = False  # catalyst not verified in demo
+
+            # P5 catalyst — live classification via Alpaca/Benzinga stream (spec §1/§13.1).
+            # Falls back to UNVERIFIED when the news stream is not yet connected.
+            catalyst_label = "UNVERIFIED (stream connecting)"
+            catalyst_type = ""
+            p5 = False
+            should_skip = False
+            if self._catalyst_verifier is not None:
+                try:
+                    cv_result = await self._catalyst_verifier.verify(sym)
+                    if cv_result.status == "SKIP":
+                        # Hard block — U15.  Drop from both tiers.
+                        should_skip = True
+                        log.info(
+                            "demo_scan.catalyst_skip symbol=%s type=%s reason=%s",
+                            sym, cv_result.catalyst_type, cv_result.reason,
+                        )
+                    elif cv_result.status == "VERIFIED":
+                        p5 = True
+                        catalyst_label = f"VERIFIED:{cv_result.catalyst_type}"
+                        catalyst_type = cv_result.catalyst_type
+                    else:
+                        catalyst_label = f"UNVERIFIED:{cv_result.reason}"
+                except Exception:  # noqa: BLE001
+                    log.debug("demo_scan.catalyst_error sym=%s", sym, exc_info=True)
+
+            if should_skip:
+                continue  # drop from watchlist per U15
+
             pillar_flags = {
                 "P1_price": p1,
                 "P2_float": p2,
@@ -311,17 +343,26 @@ class DemoEngine:
                 price=price,
                 rvol=rvol,
                 float_shares=flt,
-                catalyst="UNVERIFIED (demo: no news feed)",
+                catalyst=catalyst_label,
                 pillar_flags=pillar_flags,
                 change_pct=change,
             )
+            if catalyst_type:
+                entry = dict(entry)
+                entry["catalyst_type"] = catalyst_type
             tier_a.append(entry)
 
-            # Tier B (Five Pillars minus catalyst, which is bypassed for the demo)
-            if p1 and p2 and p3 and p4:
+            # Tier B: all Five Pillars must pass (including P5 catalyst — U1)
+            if p1 and p2 and p3 and p4 and p5:
                 b_entry = dict(entry)
                 b_entry["tier"] = "B"
+                b_entry["pillar_5_status"] = "VERIFIED"
                 tier_b.append(b_entry)
+            elif p1 and p2 and p3 and p4:
+                # P1–P4 pass but no verified catalyst → add to Tier-A only with UNVERIFIED flag
+                a_entry = dict(entry)
+                a_entry["pillar_5_status"] = "UNVERIFIED"
+                tier_a[-1] = a_entry  # update the last-appended tier_a entry
 
         self._last_scan_tier_a = tier_a
         self._last_scan_tier_b = tier_b
