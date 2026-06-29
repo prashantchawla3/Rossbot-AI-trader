@@ -47,12 +47,15 @@ if "pytest" not in _sys.modules:
     except Exception:  # noqa: BLE001 — dotenv is optional
         pass
 
-from api.routers import controls, dashboard, health, operator
+from api.routers import controls, dashboard, health, news, operator
 from api.services.alert_service import AlertService, AlertSeverity
 from api.services.health_service import HealthService, _HEALTH_POLL_S
 from api.services.state_service import StateService
 from api.services.ws_manager import ConnectionManager
 from core.logging import configure_logging
+from core.news.catalyst_classifier import CatalystClassifier
+from core.news.catalyst_verifier import CatalystVerifier
+from core.news.news_stream import NewsStreamAdapter
 
 log = logging.getLogger(__name__)
 
@@ -68,16 +71,49 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     state_svc.set_broadcast_hook(ws_manager.broadcast_json)
 
+    # News stream + catalyst verifier (Phase 14: real-time Alpaca/Benzinga feed)
+    news_stream = NewsStreamAdapter()
+    catalyst_verifier = CatalystVerifier(news_stream, CatalystClassifier())
+
+    # WebSocket push: whenever a VERIFIED catalyst arrives for a watched symbol,
+    # broadcast a "catalyst_update" event to all dashboard subscribers.
+    async def _on_verified_catalyst(symbol: str, item: Any) -> None:
+        result = catalyst_verifier._classifier.classify(  # noqa: SLF001
+            symbol=symbol,
+            headline=item.headline,
+            summary=item.summary,
+            source=item.source,
+        )
+        if result.status == "VERIFIED":
+            await ws_manager.broadcast_json({
+                "type": "catalyst_update",
+                "payload": {
+                    "symbol": symbol,
+                    "status": result.status,
+                    "catalyst_type": result.catalyst_type,
+                    "reason": result.reason,
+                    "headline": item.headline,
+                    "source": item.source,
+                    "created_at": item.created_at.isoformat(),
+                },
+            })
+
+    news_stream.add_news_callback(_on_verified_catalyst)
+
     app.state.ws_manager = ws_manager
     app.state.svc = state_svc
     app.state.alert_svc = alert_svc
     app.state.health_svc = health_svc
+    app.state.news_stream = news_stream
+    app.state.catalyst_verifier = catalyst_verifier
 
     log.info("rossbot_dashboard_startup")
 
     health_task = asyncio.create_task(
         _health_loop(ws_manager, state_svc, health_svc, alert_svc)
     )
+
+    await news_stream.start()
 
     # Phase-6 demo: start the Alpaca paper trading loop in-process (shares ws + state).
     from core.demo.wiring import start_demo, stop_demo
@@ -87,6 +123,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
 
     await stop_demo(app)
+    await news_stream.stop()
     health_task.cancel()
     try:
         await health_task
@@ -153,6 +190,7 @@ app.include_router(dashboard.router)
 app.include_router(operator.router)
 app.include_router(controls.router)
 app.include_router(health.router)
+app.include_router(news.router)
 
 
 @app.get("/health")

@@ -7,6 +7,84 @@
 
 ---
 
+## SESSION — Real-time Benzinga news stream + live Pillar-5 catalyst verification (2026-06-29)
+
+**Goal:** Wire Alpaca's NewsDataStream (Benzinga) into Pillar-5 so the demo engine
+classifies catalysts in real time instead of hardcoding `p5 = False`.
+
+### What was built
+
+**1. `core/news/` — new package (4 files)**
+- `news_stream.py` — `NewsStreamAdapter`: subscribes to wildcard `"*"` on Alpaca's
+  `wss://stream.data.alpaca.markets/v1beta1/news`, caches last 10 articles per symbol
+  (deque + asyncio.Lock), runs in the FastAPI event loop via `asyncio.create_task()`.
+  Uses `_run_forever()` (the internal async coroutine of alpaca-py `DataStream`) so it
+  integrates natively with uvicorn's event loop.  Exponential backoff on reconnect (1s→60s).
+  Registered callback mechanism to fire on each new (symbol, NewsItem) pair.
+- `catalyst_classifier.py` — `CatalystClassifier`: pure keyword classifier, no I/O.
+  SKIP rules (buyout/secondary/pump/recycled/5c-tick) hard-block before VERIFIED check.
+  VERIFIED types: biotech_fda, earnings_beat, ai_partnership (before contract_win to avoid
+  over-broad "partnership" match), contract_win, crypto_treasury, ipo_or_reverse_split,
+  activist_investor.
+- `catalyst_verifier.py` — `CatalystVerifier`: reads the stream cache for a symbol
+  (60-min lookback), runs each headline through classifier, returns the first SKIP or
+  VERIFIED result; falls back to UNVERIFIED when no news or no recognised catalyst.
+- `__init__.py` — exports all four public types.
+
+**2. `api/main.py` updates**
+- Imports `NewsStreamAdapter`, `CatalystVerifier`, `CatalystClassifier`.
+- `lifespan`: creates adapter + verifier, registers `_on_verified_catalyst` callback
+  that broadcasts `{"type":"catalyst_update", ...}` over WebSocket to all dashboard
+  clients whenever a VERIFIED catalyst item arrives.
+- Stores both objects on `app.state.news_stream` / `app.state.catalyst_verifier`.
+- Calls `await news_stream.start()` at startup and `await news_stream.stop()` at shutdown.
+- Mounts `api.routers.news.router` (`GET /api/news/{symbol}`).
+
+**3. `api/routers/news.py`** — new router
+- `GET /api/news/{symbol}` returns `{symbol, catalyst_result:{status,type,reason},
+  recent_news:[{headline,created_at,source,summary}]}`. Reads purely from in-memory cache
+  (zero extra network calls per request).
+
+**4. Demo engine wired (spec §1/§13.1 P5)**
+- `core/demo/wiring.py`: passes `catalyst_verifier` from `app.state` to `DemoEngine`.
+- `core/demo/engine.py`: replaces `p5 = False  # catalyst not verified in demo` with a
+  live `await self._catalyst_verifier.verify(sym)` call:
+  - SKIP → hard-block, symbol dropped from both tiers (U15).
+  - VERIFIED → `p5 = True`, catalyst_type stored in watchlist entry.
+  - UNVERIFIED → Tier-A entry with `pillar_5_status="UNVERIFIED"` warning flag; Tier-B
+    requires all 5 pillars so symbol stays off the tradeable list.
+
+**5. `tests/test_catalyst_classifier.py`** — 61 tests, all passing
+- Covers every SKIP category (buyout/secondary/pump/recycled/5c-tick) with multiple
+  headlines per type, headline-vs-summary matching, case-insensitivity.
+- Covers every VERIFIED type with representative Benzinga-style headlines.
+- Edge cases: SKIP beats VERIFIED in same text, empty strings → UNVERIFIED.
+- CatalystResult is frozen dataclass contract test.
+
+### Decisions & notes
+- Used `DataStream._run_forever()` (internal coroutine) instead of `DataStream.run()`
+  because `run()` calls `asyncio.run()` which conflicts with the uvicorn event loop.
+- `ai_partnership` rule ordered BEFORE `contract_win` in classifier to prevent the generic
+  substring "partnership" in contract_win from claiming "AI partnership" headlines.
+- Removed overly-broad phrases (`quarterly earnings`, `q1/2/3/4 results`) from
+  `earnings_beat` rule that caused false VERIFIED on "earnings date" announcements.
+- BENZINGA_API_KEY not required for this stream — Alpaca Benzinga feed is included with
+  the same ALPACA_API_KEY / ALPACA_API_SECRET already used for paper trading.
+- Pre-existing test failures in full-suite mode: `test_ws_manager.py` (5 tests) and
+  `test_dashboard_api.py` (1 test) fail due to `asyncio.get_event_loop()` deprecation in
+  Python 3.12 when tests run sequentially. Not introduced by this change (verified via
+  `git stash` baseline).
+
+### Open items
+- `BENZINGA_API_KEY` (REST API) no longer required for real-time news — stream is live with
+  paper keys.  REST polling in `adapters/catalyst/benzinga_feed.py` is still used by the NLP
+  catalyst provider (Phase 7) as a parallel path.
+- Consider exposing `GET /api/news/{symbol}` in the Next.js dashboard sidebar.
+- WebSocket "catalyst_update" event type is now emitted — wire a badge/toast in the
+  dashboard frontend.
+
+---
+
 ## SESSION — NVIDIA models, .env loading fix, manual-trade Command Center (2026-06-29)
 
 **Goal (operator feedback):** (1) use the real 2026 NVIDIA models, not placeholders;

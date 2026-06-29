@@ -2,6 +2,39 @@
 
 All notable changes per CLAUDE.md §11.4. Format: reverse-chronological, one entry per phase/change.
 
+## [Phase 14] Real-time Benzinga news stream + live Pillar-5 catalyst verification — 2026-06-29
+
+Replaces the `p5 = False` placeholder in the demo engine with a live Alpaca/Benzinga
+WebSocket feed classified by a pure-keyword engine.
+
+**New files:**
+- `core/news/news_stream.py` — `NewsStreamAdapter`: wildcard subscriber to Alpaca's
+  `wss://stream.data.alpaca.markets/v1beta1/news`, per-symbol deque cache (maxlen=10),
+  asyncio task with exponential reconnect backoff (1s → 60s max).
+- `core/news/catalyst_classifier.py` — `CatalystClassifier`: pure keyword engine.
+  SKIP categories: buyout/acquisition, secondary offering, pump/newsletter, recycled news,
+  five-cent tick pilot.  VERIFIED types: biotech_fda, earnings_beat, ai_partnership,
+  contract_win, crypto_treasury, ipo_or_reverse_split, activist_investor.
+- `core/news/catalyst_verifier.py` — `CatalystVerifier`: queries cache, applies classifier,
+  returns first SKIP (hard block) > first VERIFIED > UNVERIFIED.
+- `core/news/__init__.py` — package exports.
+- `api/routers/news.py` — `GET /api/news/{symbol}` endpoint.
+- `tests/test_catalyst_classifier.py` — 61 unit tests; all passing.
+
+**Modified files:**
+- `api/main.py` — lifespan wires `NewsStreamAdapter` + `CatalystVerifier`; registers
+  `_on_verified_catalyst` callback that broadcasts `catalyst_update` WS event; mounts
+  news router.
+- `core/demo/engine.py` — P5 check calls `await catalyst_verifier.verify(sym)`.
+  SKIP → drop symbol (U15).  VERIFIED → `p5=True`.  UNVERIFIED → Tier-A with flag.
+- `core/demo/wiring.py` — injects `catalyst_verifier` from `app.state` into `DemoEngine`.
+
+**No new env vars, no new dependencies, no migrations.**  Uses existing
+`ALPACA_API_KEY` / `ALPACA_API_SECRET` — Benzinga news stream is included with Alpaca's
+paper trading subscription.
+
+---
+
 ## [UI+API] NVIDIA model refresh, .env loading fix, manual-trade Command Center — 2026-06-29
 
 Three fixes from operator feedback.
