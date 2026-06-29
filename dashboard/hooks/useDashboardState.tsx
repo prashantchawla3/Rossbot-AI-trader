@@ -10,7 +10,7 @@ import {
 } from 'react'
 import { useWebSocket } from './useWebSocket'
 import { api } from '@/lib/api'
-import type { DashboardState, WsMessage, SignalEvent, RiskEvent } from '@/lib/types'
+import type { DashboardState, WsMessage, SignalEvent, RiskEvent, CatalystUpdateEvent } from '@/lib/types'
 
 type Status = 'connecting' | 'live' | 'error'
 
@@ -18,6 +18,7 @@ interface State {
   data: DashboardState | null
   status: Status
   lastUpdated: Date | null
+  catalystAlerts: CatalystUpdateEvent[]
 }
 
 type Action =
@@ -25,11 +26,12 @@ type Action =
   | { type: 'PREPEND_SIGNAL'; payload: SignalEvent }
   | { type: 'PREPEND_RISK_EVENT'; payload: RiskEvent }
   | { type: 'SET_STATUS'; status: Status }
+  | { type: 'CATALYST_UPDATE'; payload: CatalystUpdateEvent }
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'SET_STATE':
-      return { data: action.payload, status: 'live', lastUpdated: new Date() }
+      return { ...state, data: action.payload, status: 'live', lastUpdated: new Date() }
     case 'PREPEND_SIGNAL':
       if (!state.data) return state
       return {
@@ -50,6 +52,11 @@ function reducer(state: State, action: Action): State {
       }
     case 'SET_STATUS':
       return { ...state, status: action.status }
+    case 'CATALYST_UPDATE':
+      return {
+        ...state,
+        catalystAlerts: [action.payload, ...state.catalystAlerts].slice(0, 50),
+      }
     default:
       return state
   }
@@ -65,6 +72,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     data: null,
     status: 'connecting',
     lastUpdated: null,
+    catalystAlerts: [],
   })
 
   const refetch = useCallback(async () => {
@@ -87,6 +95,8 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       dispatch({ type: 'PREPEND_SIGNAL', payload: msg.payload as SignalEvent })
     } else if (msg.type === 'risk_event') {
       dispatch({ type: 'PREPEND_RISK_EVENT', payload: msg.payload as RiskEvent })
+    } else if (msg.type === 'catalyst_update') {
+      dispatch({ type: 'CATALYST_UPDATE', payload: msg.payload as CatalystUpdateEvent })
     }
   }, [])
 
