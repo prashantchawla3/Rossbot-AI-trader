@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import { useEffect, useRef, useState } from 'react'
 import dynamic from 'next/dynamic'
@@ -133,8 +133,8 @@ export default function WatchlistPage() {
             <tbody>
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={9} className=”muted”>
-                    No symbols on the watchlist yet — the scanner runs on a cadence, or press “Scan Now”.
+                  <td colSpan={9} className="muted">
+                    No symbols on the watchlist yet — the scanner runs on a cadence, or press "Scan Now".
                   </td>
                 </tr>
               )}
