@@ -188,7 +188,8 @@ classify COLD.
    risk gate exists, stop and build the gate first.
 8. **Don't expand scope:** no extra indicators, markets, asset classes, or "smart" overrides
    that aren't in the spec.
-9. **Push code to github:** On every code change, always push the code to github repo https://github.com/prashantchawla3/Rossbot-AI-trader.git with standard understandable commits.
+9. **Update your memory:** Update your memory at every working session on the Obsidian folder Ross-Bot
+10. **Push code to github:** On every code change, always push the code to github repo https://github.com/prashantchawla3/Rossbot-AI-trader.git with standard understandable commits.
 
 ## 12. Phase roadmap (placeholder — the detailed build plan is the next deliverable)
 
