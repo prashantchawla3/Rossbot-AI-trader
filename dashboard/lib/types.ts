@@ -38,6 +38,18 @@ export interface WatchlistEntry {
 
 // ── Operator console additions ──────────────────────────────────────────────
 
+export interface AccountState {
+  connected: boolean
+  equity?: string
+  buying_power?: string
+  cash?: string
+  day_trade_count?: number
+  paper?: boolean
+  auto_trade?: boolean
+  replay_mode?: boolean
+  error?: string
+}
+
 export interface Bar {
   time: number
   open: string
@@ -91,7 +103,32 @@ export interface AnalyzeVerdict {
   warnings: string[]
   ross_would_say: string
   source: string
+  provider?: string
+  model?: string
   market_data?: Record<string, unknown>
+}
+
+// ── AI model picker (GET /api/models) ───────────────────────────────────────
+
+export interface ModelOption {
+  id: string
+  label: string
+}
+
+export interface ProviderInfo {
+  key: string
+  label: string
+  configured: boolean
+  env_key: string
+  default_model: string
+  note: string
+  models: ModelOption[]
+}
+
+export interface ModelsCatalog {
+  providers: ProviderInfo[]
+  default_provider: string
+  default_model: string
 }
 
 export interface JournalTrade {

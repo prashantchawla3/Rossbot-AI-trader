@@ -34,3 +34,7 @@ dashboard/out/
 Thumbs.db
 .idea/
 .vscode/
+
+# Dashboard build artifacts
+dashboard/install.log
+dashboard/tsconfig.tsbuildinfo

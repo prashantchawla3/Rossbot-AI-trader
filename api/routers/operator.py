@@ -109,14 +109,51 @@ async def scanner_trigger(request: Request) -> dict[str, Any]:
     return await _engine(request).trigger_scan()
 
 
-# ── AI analysis (Claude sonnet-4-6) ─────────────────────────────────────────────
+# ── AI analysis (selectable provider/model) ─────────────────────────────────────
+
+@router.get("/models")
+async def list_models() -> dict[str, Any]:
+    """Provider/model catalog for the AI-analysis picker (which keys are configured)."""
+    from adapters.llm_providers import catalog
+
+    return catalog()
+
+
+@router.get("/account")
+async def get_account(request: Request) -> dict[str, Any]:
+    """Live Alpaca paper-account snapshot (read-only) for the Command Center.
+
+    Returns connection status + equity / buying-power / cash / day-trade count so the
+    operator can confirm the bot is wired to Alpaca before placing a manual test trade.
+    Never raises: an unconfigured or unreachable broker returns ``connected: false``.
+    """
+    eng = getattr(request.app.state, "demo_engine", None)
+    if eng is None:
+        return {"connected": False, "error": "engine_not_running"}
+    info = await eng.verify_broker()
+    cfg = getattr(eng, "cfg", None)
+    if cfg is not None:
+        info.setdefault("paper", bool(getattr(cfg, "paper", True)))
+        info["auto_trade"] = bool(eng.effective_auto_trade)
+        info["replay_mode"] = bool(getattr(cfg, "demo_replay_mode", False))
+    return info
+
 
 @router.get("/analyze/{symbol}")
-async def analyze_symbol(request: Request, symbol: str) -> dict[str, Any]:
-    """Full Ross-strategy analysis of a symbol via Claude (advisory only)."""
+async def analyze_symbol(
+    request: Request,
+    symbol: str,
+    provider: str | None = None,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """Full Ross-strategy analysis of a symbol (advisory only).
+
+    ``provider`` / ``model`` select the AI model (Anthropic / OpenAI / NVIDIA NIM /
+    Google); both are optional and fall back to the configured default.
+    """
     sym = symbol.upper().strip()
     md = await _gather_market_data(request, sym)
-    verdict = _analyzer(request).analyze(sym, md)
+    verdict = _analyzer(request).analyze(sym, md, provider=provider, model=model)
     verdict["market_data"] = md
     return verdict
 

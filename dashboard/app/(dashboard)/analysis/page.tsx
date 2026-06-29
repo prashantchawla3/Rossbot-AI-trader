@@ -1,11 +1,11 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
 import { useChartSymbol } from '@/hooks/useChartSymbol'
 import { Tooltip } from '@/components/Tooltip'
 import { Term } from '@/components/Term'
-import type { AnalyzeVerdict, PillarCell, GateCell } from '@/lib/types'
+import type { AnalyzeVerdict, PillarCell, GateCell, ModelsCatalog, ProviderInfo } from '@/lib/types'
 
 function passClass(p: boolean | null): string {
   return p === true ? 'pos' : p === false ? 'neg' : 'muted'
@@ -14,12 +14,54 @@ function passMark(p: boolean | null): string {
   return p === true ? '✓' : p === false ? '✗' : '–'
 }
 
+const LS_PROVIDER = 'rossbot.ai.provider'
+const LS_MODEL = 'rossbot.ai.model'
+
 export default function AnalysisPage() {
   const { setSymbol } = useChartSymbol()
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [verdict, setVerdict] = useState<AnalyzeVerdict | null>(null)
   const [err, setErr] = useState<string | null>(null)
+
+  // ── AI model picker ──
+  const [catalog, setCatalog] = useState<ModelsCatalog | null>(null)
+  const [provider, setProvider] = useState('')
+  const [model, setModel] = useState('')
+
+  useEffect(() => {
+    api
+      .getModels()
+      .then((c) => {
+        setCatalog(c)
+        const savedP = typeof window !== 'undefined' ? localStorage.getItem(LS_PROVIDER) : null
+        const savedM = typeof window !== 'undefined' ? localStorage.getItem(LS_MODEL) : null
+        const validProvider = c.providers.some((p) => p.key === savedP)
+        const p = validProvider ? (savedP as string) : c.default_provider
+        const prov = c.providers.find((x) => x.key === p)
+        const validModel = prov?.models.some((m) => m.id === savedM)
+        setProvider(p)
+        setModel(validModel ? (savedM as string) : prov?.default_model ?? c.default_model)
+      })
+      .catch(() => setCatalog(null))
+  }, [])
+
+  function onProvider(key: string) {
+    setProvider(key)
+    const prov = catalog?.providers.find((p) => p.key === key)
+    const m = prov?.default_model ?? ''
+    setModel(m)
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(LS_PROVIDER, key)
+      localStorage.setItem(LS_MODEL, m)
+    }
+  }
+  function onModel(id: string) {
+    setModel(id)
+    if (typeof window !== 'undefined') localStorage.setItem(LS_MODEL, id)
+  }
+
+  const activeProvider: ProviderInfo | undefined = catalog?.providers.find((p) => p.key === provider)
 
   async function analyze(e?: React.FormEvent) {
     e?.preventDefault()
@@ -30,7 +72,7 @@ export default function AnalysisPage() {
     setVerdict(null)
     setSymbol(sym)
     try {
-      setVerdict(await api.analyze(sym))
+      setVerdict(await api.analyze(sym, provider || undefined, model || undefined))
     } catch (e2) {
       setErr(String(e2))
     } finally {
@@ -44,11 +86,48 @@ export default function AnalysisPage() {
         <div>
           <h1>AI Analysis</h1>
           <p className="muted">
-            Ask Claude to grade any US equity against Ross’s exact rules. Suggested trades still go through the
-            risk gate.
+            Grade any US equity against Ross’s exact rules with the AI model of your choice. Suggested trades
+            still go through the risk gate.
           </p>
         </div>
       </div>
+
+      {catalog && (
+        <div className="card model-picker">
+          <div className="model-picker-row">
+            <label className="model-field">
+              <span className="control-eyebrow">AI Provider</span>
+              <select className="input input-sm" value={provider} onChange={(e) => onProvider(e.target.value)}>
+                {catalog.providers.map((p) => (
+                  <option key={p.key} value={p.key}>
+                    {p.label}
+                    {p.configured ? '' : ' — no API key'}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="model-field">
+              <span className="control-eyebrow">Model</span>
+              <select className="input input-sm" value={model} onChange={(e) => onModel(e.target.value)}>
+                {activeProvider?.models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {activeProvider && !activeProvider.configured && (
+            <p className="muted small">
+              ⚠️ No API key for {activeProvider.label}. Set <code>{activeProvider.env_key}</code> in the
+              backend <code>.env</code> and restart the API. {activeProvider.note}
+            </p>
+          )}
+          {activeProvider?.configured && activeProvider.note && (
+            <p className="muted small">{activeProvider.note}</p>
+          )}
+        </div>
+      )}
 
       <form className="analyzer-bar card" onSubmit={analyze}>
         <input
@@ -107,8 +186,18 @@ function VerdictCard({ verdict }: { verdict: AnalyzeVerdict }) {
         </span>
       </div>
       <p className="verdict-summary">{verdict.verdict_summary}</p>
-      {verdict.source !== 'claude' && (
-        <p className="muted small">Heuristic verdict (Claude unavailable — set ANTHROPIC_API_KEY for full AI analysis).</p>
+      {verdict.source === 'fallback' ? (
+        <p className="muted small">
+          Heuristic verdict — the chosen AI model was unavailable. Check the provider’s API key in the backend
+          <code> .env</code>.
+        </p>
+      ) : (
+        verdict.model && (
+          <p className="muted small">
+            Analyzed by <b>{verdict.model}</b>
+            {verdict.provider ? ` (${verdict.provider})` : ''}.
+          </p>
+        )
       )}
 
       <div className="verdict-grid">

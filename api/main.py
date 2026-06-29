@@ -26,13 +26,24 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # Load .env BEFORE importing routers/auth (api.auth reads DASHBOARD_API_KEY at import).
 # Skipped under pytest so tests control the environment (they set DASHBOARD_API_KEY themselves).
+#
+# IMPORTANT: we resolve the .env path RELATIVE TO THIS FILE (repo root = api/..), not the
+# current working directory. Bare load_dotenv() searches up from cwd, so launching uvicorn
+# from anywhere but the repo root silently loaded NO keys → the dashboard reported every
+# provider "not configured" even though .env had the keys. Anchoring the path fixes that.
+# NOTE: editing .env requires a full API RESTART — `uvicorn --reload` only watches .py files.
 import sys as _sys
 
 if "pytest" not in _sys.modules:
     try:
+        from pathlib import Path as _Path
+
         from dotenv import load_dotenv
 
-        load_dotenv()
+        _env_path = _Path(__file__).resolve().parent.parent / ".env"
+        # override=True so a freshly-edited .env wins over any stale value already in the
+        # process env (e.g. an empty placeholder exported by a wrapper script).
+        load_dotenv(dotenv_path=_env_path if _env_path.exists() else None, override=True)
     except Exception:  # noqa: BLE001 — dotenv is optional
         pass
 

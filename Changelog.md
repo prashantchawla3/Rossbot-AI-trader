@@ -2,6 +2,91 @@
 
 All notable changes per CLAUDE.md §11.4. Format: reverse-chronological, one entry per phase/change.
 
+## [UI+API] NVIDIA model refresh, .env loading fix, manual-trade Command Center — 2026-06-29
+
+Three fixes from operator feedback.
+
+**1. Real 2026 NVIDIA NIM models (`adapters/llm_providers.py`).**
+Replaced the placeholder NVIDIA model list with the current flagship preview models
+from build.nvidia.com/models: `deepseek-ai/deepseek-v4-pro` (new default),
+`z-ai/glm-5.1`, `moonshotai/kimi-k2.6`, `nvidia/nemotron-3-ultra-550b-a55b`,
+`minimaxai/minimax-m3`, `mistralai/mistral-medium-3.5-128b`. The picker still accepts
+any custom slug. `.env.example` NVIDIA hint updated to match.
+
+**2. Fixed "no API key" in the picker even when keys ARE set (`api/main.py`).**
+Root cause: bare `load_dotenv()` searches up from the *current working directory*, so
+launching uvicorn from anywhere but the repo root loaded zero keys → every provider
+showed "not configured". Now the `.env` path is anchored relative to `api/main.py`
+(repo root) and loaded with `override=True`. NOTE (operational): editing `.env` still
+requires a full API **restart** — `uvicorn --reload` only watches `.py` files. The
+running server's stale env was the actual symptom the operator hit.
+
+**3. Manual test-trade desk on the Command Center (was effectively blank).**
+The Command Center now doubles as a manual-trading desk wired to the live Alpaca
+paper account, so the operator can verify signals/strategy/execution end-to-end:
+- New `GET /api/account` (`api/routers/operator.py`) — read-only Alpaca snapshot
+  (connected, equity, buying-power, cash, day-trade count, paper/replay/auto-trade).
+- New `AccountPanel` — broker connection + balances, polled every 15s.
+- New `ManualTradePanel` — place a BUY/SELL paper order (limit-only, U7) with a
+  "Last" price helper; routed through the SAME risk gate as the bot (U4/U5/§5/§6),
+  which can VETO or RESIZE. Fills/positions/P&L appear in the surrounding panels.
+- Command Center rebuilt to show: Alpaca account, metrics, risk gauge, bot controls,
+  the manual trade desk, open positions & P&L, and the live scanner watchlist with a
+  "Scan now" button. No guardrail is bypassed — manual orders use the existing
+  `DemoEngine.manual_order` gate. (Manual trading also already exists on the AI
+  Analysis page; this surfaces it where operators expect it.)
+
+## [UI] Allow selection of unconfigured AI providers — 2026-06-29
+
+Removed `disabled={!p.configured}` from the provider `<option>` elements in
+`dashboard/app/(dashboard)/analysis/page.tsx`. All four providers (Anthropic,
+OpenAI, NVIDIA NIM, Google Gemini) are now selectable regardless of whether an
+API key is set. Unconfigured providers still display `— no API key` in the label
+and show the existing warning banner explaining which env var to set. Attempting
+to analyze with an unconfigured provider falls back to the heuristic verdict
+(already handled by the backend).
+
+## [UI+API] Multi-provider AI model selection + operator-console 404 fix — 2026-06-28
+
+**1. Operator-console "Not Found" errors (config / control / scanner).**
+Diagnosed the reported 404s on `/api/config`, `/api/control/{pause,halt-day,flatten}`, and
+`/api/scanner/trigger`. The routes are defined in `api/routers/operator.py` and resolve
+correctly — verified end-to-end with `TestClient` and a live `uvicorn` run, all return
+**200** (or 503 when `ROSSBOT_RUN_ENGINE=false`), never 404. Root cause: the running API
+process was started **before** the operator console was added, so it served stale routes.
+Fix is operational — **restart the API** (`start.bat`, or `dev_start_api.bat` for `--reload`)
+so it picks up the operator router. No routing bug; no code change required for part 1.
+
+**2. Choose the AI model used for analysis (Anthropic / OpenAI / NVIDIA / Google).**
+The "AI Analysis" page now lets the operator pick a provider + model. Research-verified
+2026-06 model IDs/endpoints (see `adapters/llm_providers.py` header for citations).
+
+**Backend**
+- `adapters/llm_providers.py` (new): provider registry + unified `chat()` gateway. Anthropic
+  uses the native `anthropic` SDK; OpenAI, **NVIDIA NIM (free tier)**, and Google Gemini all
+  use the OpenAI-compatible `chat.completions` endpoint via the `openai` SDK with a per-provider
+  `base_url`. `catalog()` reports which providers have keys; `resolve()` accepts custom model
+  ids (NVIDIA alone hosts 100+). Reasoning-model param shapes (`max_completion_tokens`,
+  no `temperature`) handled by graceful retry. All failures → `LLMError` → heuristic fallback.
+- `adapters/analyzer.py`: `StrategyAnalyzer` refactored to be provider-agnostic — `analyze()`
+  takes `provider`/`model`; routes through `llm_providers.chat`; verdict carries
+  `provider`/`model`; `source` is the provider key (or `"fallback"`). `chat_fn` injectable for
+  tests. Tolerates models that wrap JSON in prose.
+- `api/routers/operator.py`: new `GET /api/models` (provider/model catalog); `GET /api/analyze`
+  accepts optional `provider` + `model` query params.
+- Env: `OPENAI_API_KEY`, `NVIDIA_API_KEY`, `GEMINI_API_KEY` (`GOOGLE_API_KEY` alias) added to
+  `.env` / `.env.example` — all optional; Anthropic stays the default.
+- `requirements.txt` / `pyproject.toml`: added `openai>=1.60.0` (lazy-imported; fails safe).
+
+**Frontend (dashboard/)**
+- `app/(dashboard)/analysis/page.tsx`: provider + model dropdowns (persisted in localStorage),
+  disables providers with no key and shows the env var to set; verdict card shows which model
+  produced it; heuristic note now keys off `source === 'fallback'`.
+- `lib/api.ts`: `getModels()`; `analyze(symbol, provider?, model?)` with query params.
+- `lib/types.ts`: `ModelsCatalog` / `ProviderInfo` / `ModelOption`; `AnalyzeVerdict` gains
+  `provider`/`model`.
+- `app/globals.css`: `.model-picker` styles.
+
 ## [UI+API] Interactive operator console — chart, controls, AI analysis, journal — 2026-06-28
 
 Rebuilt the read-only dashboard into a 5-tab interactive operator console. The risk gate is

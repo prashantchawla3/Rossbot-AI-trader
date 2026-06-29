@@ -41,6 +41,9 @@ vendors = [
     # Claude API — catalyst classifier (§13.1) + dashboard AI analyzer. Lazy-imported;
     # both call sites fail safe to a heuristic when ANTHROPIC_API_KEY / the SDK is absent.
     "anthropic>=0.49.0",
+    # OpenAI SDK — drives the OpenAI-compatible AI-analysis providers (OpenAI, NVIDIA
+    # NIM, Google Gemini) in adapters/llm_providers.py. Lazy-imported; fails safe.
+    "openai>=1.60.0",
 ]
 
 [dependency-groups]

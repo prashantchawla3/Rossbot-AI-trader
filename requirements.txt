@@ -39,3 +39,9 @@ alpaca-py>=0.43.4
 # Lazy-imported in adapters/catalyst/llm_classifier.py and adapters/analyzer.py;
 # both fail safe to a heuristic if the key/SDK is missing. Needs ANTHROPIC_API_KEY.
 anthropic>=0.49.0
+
+# --- Multi-provider AI analysis (dashboard model picker) ---
+# OpenAI SDK drives the OpenAI-compatible endpoints: OpenAI (OPENAI_API_KEY),
+# NVIDIA NIM (NVIDIA_API_KEY, free tier), and Google Gemini (GEMINI_API_KEY).
+# Lazy-imported in adapters/llm_providers.py; fails safe to a heuristic if absent.
+openai>=1.60.0

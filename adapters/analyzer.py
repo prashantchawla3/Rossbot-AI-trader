@@ -1,15 +1,18 @@
-"""Claude Sonnet 4.6 strategy analyzer — the dashboard "AI Analysis" assistant.
+"""Multi-provider strategy analyzer — the dashboard "AI Analysis" assistant.
 
-Model: claude-sonnet-4-6 (verified via the claude-api skill, 2026-06).
-Pricing (claude-api skill cache 2026-06): Input $3.00 / MTok | Output $15.00 / MTok.
+The operator picks a provider + model in the dashboard (Anthropic, OpenAI,
+NVIDIA NIM, or Google Gemini); the actual API call is dispatched by
+``adapters.llm_providers``. See that module for the verified 2026-06 model IDs,
+endpoints, and required env keys.
 
-Given a symbol's live market data, Claude scores it against EVERY Ross-Cameron entry
-gate (Five Pillars §1, entry gates E2–E7 §2) and returns a structured JSON verdict that
-the dashboard renders as a card (would_ross_trade, pillars, entry_gates, suggested_trade).
+Given a symbol's live market data, the chosen model scores it against EVERY
+Ross-Cameron entry gate (Five Pillars §1, entry gates E2–E7 §2) and returns a
+structured JSON verdict the dashboard renders as a card (would_ross_trade,
+pillars, entry_gates, suggested_trade).
 
-Requires ANTHROPIC_API_KEY. Returns a deterministic ``_fallback_verdict`` (no API call)
-when the key/SDK is missing so the dashboard degrades gracefully instead of erroring.
-``client`` is injectable for offline tests.
+Returns a deterministic ``_fallback_verdict`` (no API call) when the chosen
+provider has no key/SDK or the API errors, so the dashboard degrades gracefully
+instead of erroring. ``chat_fn`` is injectable for offline tests.
 
 This is an ADVISORY surface only. A suggested trade is NOT executed here — execution
 goes through the Risk Manager gate (DemoEngine.manual_trade). spec §2 / §13.1.
@@ -18,8 +21,10 @@ goes through the Risk Manager gate (DemoEngine.manual_trade). spec §2 / §13.1.
 from __future__ import annotations
 
 import json
-import os
+from collections.abc import Callable
 from typing import Any
+
+from adapters import llm_providers
 
 # spec §2/§3 — the exact indicators and gates Ross uses; Claude is told to reason
 # strictly within these rules and to bias toward SKIP on ambiguity (false-negative = safe).
@@ -78,31 +83,31 @@ Return ONLY a valid JSON object (no prose, no markdown fences) with this exact s
 
 
 class StrategyAnalyzer:
-    """Zero-shot Claude Sonnet 4.6 analyzer for a single symbol (spec §2)."""
+    """Zero-shot single-symbol analyzer over a selectable provider/model (spec §2).
+
+    The provider + model are chosen per-request (dashboard picker); the constructor
+    only sets the defaults used when the request leaves them blank. ``chat_fn`` is
+    injectable for offline tests — it must mirror ``llm_providers.chat``'s signature
+    and return ``(text, provider_key, model_id)``.
+    """
 
     def __init__(
         self,
-        api_key: str | None = None,
-        model: str = "claude-sonnet-4-6",
-        client: object | None = None,
+        default_provider: str | None = None,
+        default_model: str | None = None,
+        chat_fn: Callable[..., tuple[str, str, str]] | None = None,
     ) -> None:
-        self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        self._model = model
-        self._client = client  # injected for tests; None → lazy-init on first call
+        self._default_provider = default_provider or llm_providers.DEFAULT_PROVIDER
+        self._default_model = default_model
+        self._chat = chat_fn or llm_providers.chat
 
-    def _get_client(self) -> object | None:
-        if not self._api_key:
-            return None
-        if self._client is None:
-            try:
-                import anthropic  # optional dependency (rossbot[vendors])
-
-                self._client = anthropic.Anthropic(api_key=self._api_key)
-            except ImportError:
-                return None
-        return self._client
-
-    def analyze(self, symbol: str, market_data: dict[str, Any]) -> dict[str, Any]:
+    def analyze(
+        self,
+        symbol: str,
+        market_data: dict[str, Any],
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> dict[str, Any]:
         """Return a structured verdict dict for ``symbol`` given its live market data.
 
         ``market_data`` keys (best-effort, any may be None): price, change_pct, rvol,
@@ -110,33 +115,41 @@ class StrategyAnalyzer:
         OHLC dicts oldest→newest). Falls back to a deterministic verdict on any error.
         """
         sym = symbol.upper().strip()
-        client = self._get_client()
-        if client is None:
-            return self._fallback_verdict(sym, market_data, "no_api_key")
-
+        prov = provider or self._default_provider
         user_msg = self._build_prompt(sym, market_data)
+
         try:
-            response = client.messages.create(  # type: ignore[attr-defined]
-                model=self._model,
+            raw_text, used_provider, used_model = self._chat(
+                prov,
+                model or self._default_model,
+                ANALYZER_SYSTEM_PROMPT,
+                user_msg,
                 max_tokens=1200,
-                system=ANALYZER_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_msg}],
             )
-            raw_text: str = response.content[0].text.strip()
-        except Exception as exc:  # noqa: BLE001
+        except llm_providers.LLMError as exc:
+            return self._fallback_verdict(sym, market_data, str(exc))
+        except Exception as exc:  # noqa: BLE001 — never let the analyzer hard-fail
             return self._fallback_verdict(sym, market_data, f"api_error: {exc}")
 
+        raw_text = (raw_text or "").strip()
         # Strip accidental markdown fences (same defensive parse as the catalyst classifier).
         if raw_text.startswith("```"):
             parts = raw_text.split("```")
             raw_text = parts[1] if len(parts) > 1 else parts[0]
             if raw_text.startswith("json"):
                 raw_text = raw_text[4:]
+        # Some models (e.g. reasoning models) wrap JSON in prose — grab the JSON object.
+        if not raw_text.lstrip().startswith("{"):
+            start, end = raw_text.find("{"), raw_text.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                raw_text = raw_text[start : end + 1]
         try:
             obj = json.loads(raw_text)
         except Exception:  # noqa: BLE001
             return self._fallback_verdict(sym, market_data, "unparseable_response")
-        obj["source"] = "claude"
+        obj["source"] = used_provider
+        obj["provider"] = used_provider
+        obj["model"] = used_model
         obj.setdefault("symbol", sym)
         return obj
 
@@ -173,7 +186,7 @@ Score every Pillar and entry gate, then produce the JSON verdict.
 
     @staticmethod
     def _fallback_verdict(symbol: str, md: dict[str, Any], reason: str) -> dict[str, Any]:
-        """Deterministic rule-of-thumb verdict when Claude is unavailable.
+        """Deterministic rule-of-thumb verdict when the chosen AI model is unavailable.
 
         Computed directly from the numbers so the dashboard still shows a usable card.
         """
@@ -200,7 +213,7 @@ Score every Pillar and entry gate, then produce the JSON verdict.
             "would_ross_trade": would,
             "confidence": 5 if would else 2,
             "verdict_summary": (
-                f"Heuristic verdict (Claude unavailable: {reason}). "
+                f"Heuristic verdict (AI model unavailable: {reason}). "
                 + ("Pillars/MACD align — viable." if would else "One or more hard gates fail.")
             ),
             "pillars": {
@@ -219,7 +232,7 @@ Score every Pillar and entry gate, then produce the JSON verdict.
                 "E7_spread": {"pass": e7, "note": "ideal $0.03-$0.10"},
             },
             "suggested_trade": None,
-            "warnings": [f"Claude analysis unavailable ({reason}); heuristic only.",
+            "warnings": [f"AI analysis unavailable ({reason}); heuristic only.",
                          "Catalyst (P5) unverified — check news manually."],
             "ross_would_say": (
                 "Clean low-float momentum with positive MACD — if there's news, this is a setup."

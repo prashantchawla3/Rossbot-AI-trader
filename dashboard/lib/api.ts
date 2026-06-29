@@ -9,8 +9,10 @@ import type {
   Bar,
   SessionConfig,
   AnalyzeVerdict,
+  ModelsCatalog,
   JournalTrade,
   SessionSummary,
+  AccountState,
 } from './types'
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
@@ -54,7 +56,15 @@ export const api = {
   getBars: (symbol: string, limit = 50) =>
     apiFetch<{ symbol: string; bars: Bar[] }>(`/api/bars/${symbol}?limit=${limit}`),
   getConfig: () => apiFetch<SessionConfig>('/api/config'),
-  analyze: (symbol: string) => apiFetch<AnalyzeVerdict>(`/api/analyze/${symbol}`),
+  getAccount: () => apiFetch<AccountState>('/api/account'),
+  getModels: () => apiFetch<ModelsCatalog>('/api/models'),
+  analyze: (symbol: string, provider?: string, model?: string) => {
+    const qs = new URLSearchParams()
+    if (provider) qs.set('provider', provider)
+    if (model) qs.set('model', model)
+    const suffix = qs.toString() ? `?${qs.toString()}` : ''
+    return apiFetch<AnalyzeVerdict>(`/api/analyze/${symbol}${suffix}`)
+  },
   journalToday: () =>
     apiFetch<{ trades: JournalTrade[]; count: number }>('/api/journal/today'),
   sessionSummary: () => apiFetch<SessionSummary>('/api/journal/session-summary'),

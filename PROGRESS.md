@@ -7,6 +7,80 @@
 
 ---
 
+## SESSION — NVIDIA models, .env loading fix, manual-trade Command Center (2026-06-29)
+
+**Goal (operator feedback):** (1) use the real 2026 NVIDIA models, not placeholders;
+(2) fix the picker showing "no API key" even though keys are set; (3) explain/enable
+placing a manual demo trade since the Command Center looked blank — wired to Alpaca.
+
+**1. NVIDIA models refreshed.** `adapters/llm_providers.py` NVIDIA registry now lists the
+current build.nvidia.com flagships: `deepseek-ai/deepseek-v4-pro` (default), `z-ai/glm-5.1`,
+`moonshotai/kimi-k2.6`, `nvidia/nemotron-3-ultra-550b-a55b`, `minimaxai/minimax-m3`,
+`mistralai/mistral-medium-3.5-128b`. (build.nvidia.com/models is JS-rendered and timed out
+on WebFetch; slugs confirmed against the operator's own list + multiple 2026 references.)
+
+**2. "No API key" root cause = stale process + cwd-relative dotenv.** Confirmed the live
+server returned `configured:false` for every provider AND still served the OLD model list,
+while `.env` (repo root, clean UTF-8) DID contain valid ANTHROPIC/NVIDIA/GEMINI/ALPACA keys
+and `dotenv_values('.env')` parsed them fine. Two fixes: (a) `api/main.py` now anchors the
+`.env` path to the repo root (relative to the file, not cwd) and loads with `override=True`;
+(b) documented that editing `.env` needs a full API **restart** (`--reload` ignores env).
+DASHBOARD_API_KEY in root `.env` matches `dashboard/.env.local` NEXT_PUBLIC_API_KEY → controls auth OK.
+
+**3. Manual-trade Command Center (built).** The Command Center is no longer a thin metrics
+page — it's the manual-trading desk the operator asked for, all through the existing risk gate:
+- `GET /api/account` (read-only Alpaca snapshot) + `AccountPanel` (connection + balances).
+- `ManualTradePanel` — BUY/SELL paper order, limit-only (U7), "Last" price helper, routed
+  through `DemoEngine.manual_order` (U4/U5/§5/§6 → can VETO/RESIZE).
+- Page now shows: account, metrics, risk gauge, bot controls, manual desk, open positions
+  & P&L, and the live Tier-A/B scanner watchlist with "Scan now".
+- Verified: dashboard `tsc --noEmit` clean; `pytest tests/test_dashboard_api.py` + catalyst/
+  provider suites green; backend imports OK.
+
+**Decision:** no new guardrail surface — manual trades reuse the bot's gate; nothing bypasses
+risk. Manual trading also still lives on the AI Analysis page (Execute / Quick Order).
+
+**Next step:** operator restarts the API + dashboard to pick up the new env + Command Center;
+confirm Alpaca paper account shows CONNECTED and a test BUY fills end-to-end.
+
+---
+
+## SESSION — Multi-provider AI model picker + operator 404 triage (2026-06-28)
+
+**Goal:** (1) Fix reported "Not Found" errors on the operator console; (2) let the operator
+choose which AI model grades a symbol (Anthropic / OpenAI / NVIDIA / Google).
+
+**Part 1 — the 404s were a stale server, not a bug.** `/api/config`, `/api/control/*`,
+`/api/scanner/trigger` are all defined in `api/routers/operator.py` and resolve correctly —
+proven with `TestClient` and a live `uvicorn` run (200, or 503 when the demo engine is off;
+never 404). The user's running process predated the operator-console commit. **Fix: restart the
+API** (`start.bat`). No code change needed for part 1.
+
+**Part 2 — multi-provider AI analysis (built).**
+- Researched + verified (web, 2026-06) current model IDs/endpoints for all four providers.
+  OpenAI, NVIDIA NIM (free), and Gemini are all OpenAI-compatible → one `openai`-SDK code path
+  with per-provider `base_url`; Anthropic uses its native SDK. Citations in
+  `adapters/llm_providers.py` header.
+- New `adapters/llm_providers.py` (registry + `chat()` gateway + `catalog()`); `analyzer.py`
+  made provider-agnostic; `GET /api/models` + `provider`/`model` params on `/api/analyze`;
+  env keys `OPENAI_API_KEY` / `NVIDIA_API_KEY` / `GEMINI_API_KEY`; dashboard model picker
+  (persisted, key-aware). `openai>=1.60.0` added (lazy, fails safe).
+
+**Decision:** kept Anthropic `claude-sonnet-4-6` as the default model (preserves the client's
+existing cost profile) rather than switching the default to Opus; Opus 4.8/4.7 are offered in
+the picker. Every provider degrades to the deterministic heuristic verdict if its key/SDK is
+missing or the API errors — the dashboard never hard-fails.
+
+**Verified:** `pytest tests/test_dashboard_api.py` 17/17 pass; `/api/models` + `/api/analyze`
+return 200 via TestClient; dashboard `tsc --noEmit` clean. (Full-suite `test_ws_manager` /
+alert failures are a pre-existing asyncio event-loop test-isolation issue — pass in isolation,
+unrelated to this change.)
+
+**Next:** add real provider API keys to `.env` to exercise live calls; consider a backend test
+module for `llm_providers` (catalog + fallback) once a CI key strategy is decided.
+
+---
+
 ## SESSION — Interactive operator console (dashboard rebuild) (2026-06-28)
 
 **Goal:** Turn the read-only dashboard into a full operator console — fix the broken chart, wire
