@@ -30,11 +30,17 @@ class Base(DeclarativeBase):
 
 
 def database_url() -> str:
-    """Resolve the database URL from env (fail-safe: explicit error if unset)."""
+    """Resolve the database URL from env, remapped to psycopg3 driver.
+
+    The .env stores a bare ``postgresql://`` URL for portability; SQLAlchemy
+    maps that to psycopg2 by default. We remap to ``postgresql+psycopg://``
+    (psycopg 3, per pyproject.toml) so no psycopg2 install is needed.
+    """
     url = os.environ.get("ROSSBOT_DATABASE_URL")
     if not url:
         raise RuntimeError("ROSSBOT_DATABASE_URL is not set (see .env.example)")
-    return url
+    # Remap bare postgresql:// -> postgresql+psycopg:// (psycopg 3 driver).
+    return url.replace("postgresql://", "postgresql+psycopg://", 1)
 
 
 def ssl_connect_args(url: str) -> dict[str, str]:

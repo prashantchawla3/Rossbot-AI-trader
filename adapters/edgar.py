@@ -33,7 +33,10 @@ Fetcher = Callable[[str, str], bytes]
 
 def _urllib_fetch(url: str, user_agent: str) -> bytes:
     # verified: SEC requires a descriptive UA (company + contact email); blank UA is blocked.
-    req = Request(url, headers={"User-Agent": user_agent, "Accept-Encoding": "gzip, deflate"})
+    # Accept-Encoding: identity — SEC returns gzip when asked but urllib.request does NOT
+    # auto-decompress (unlike the `requests` library); requesting identity avoids needing
+    # to call gzip.decompress() on the raw bytes in every caller.
+    req = Request(url, headers={"User-Agent": user_agent, "Accept-Encoding": "identity"})
     with urlopen(req, timeout=15) as resp:
         data: bytes = resp.read()
     return data

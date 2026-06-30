@@ -2,6 +2,45 @@
 
 All notable changes per CLAUDE.md §11.4. Format: reverse-chronological, one entry per phase/change.
 
+## [Fixture Replay] Spec §12 end-to-end pipeline proof + wiring bug fixes — 2026-06-30
+
+Historical fixture replay harness that runs SLXN and MLGO through the full pipeline
+(scanner → E1-E7 → risk manager → FillModel → DB) using Alpaca IEX historical data,
+and reports gate-by-gate pass/fail with actual computed values vs thresholds.
+
+**New files:**
+- `scripts/fixture_replay.py` — spec §12 fixture replay harness. Fetches daily+1-min bars
+  from Alpaca IEX, resolves float via SEC EDGAR, computes RVOL/ROC, runs strategy engine
+  bar-by-bar, evaluates risk manager, simulates fills via FillModel, and writes
+  risk_events/signals/orders/fills/ledger rows to Supabase.
+
+**Wiring bugs fixed (confirmed, not threshold changes):**
+- `db/base.py` — `database_url()` now remaps `postgresql://` → `postgresql+psycopg://`
+  (psycopg 3 driver per pyproject.toml; bare URL mapped to psycopg2 which is not installed).
+- `db/migrations/env.py` — same psycopg3 remap applied before `engine_from_config()`;
+  migrations were silently failing to connect.
+- `adapters/edgar.py` — `_urllib_fetch()`: changed `Accept-Encoding: gzip, deflate` to
+  `Accept-Encoding: identity`. SEC API returns gzip when asked but `urllib.request.urlopen`
+  does NOT auto-decompress; the raw gzip bytes caused `UnicodeDecodeError` in all EDGAR
+  callers. This was a silent production bug.
+
+**Data blockers identified (require vendor decision — NOT code fixes):**
+- E6 (L2 depth): `DATABENTO_API_KEY` empty → `L2Signal.UNKNOWN` → E6 fails closed per §13.2.
+  Databento TotalView-ITCH subscription required.
+- P5 (catalyst): `BENZINGA_API_KEY` empty → `StubCatalystProvider` → UNVERIFIED.
+  Benzinga Pro API subscription required. (`tier_b_pass=True` set per spec §12 annotation.)
+- P3 (RVOL): Alpaca IEX returned only 2–23 1-min bars for SLXN/MLGO on their move dates
+  (IEX exchange doesn't carry micro-cap tape). MACD needs ≥26 bars to seed.
+  Alpaca SIP feed (paid) required for consolidated tape on all US equity venues.
+- P2 (float): EDGAR gives shares-outstanding (upper bound), not free float. MLGO EDGAR
+  shows 51.6M shares-outstanding > 20M ceiling, but true free float is lower.
+  Polygon.io/FMP fundamentals API required for live free float.
+
+**Logic bugs confirmed: none.** Pipeline correctly fails closed when data is unavailable.
+All 915 core tests still passing.
+
+---
+
 ## [Phase 14] Real-time Benzinga news stream + live Pillar-5 catalyst verification — 2026-06-29
 
 Replaces the `p5 = False` placeholder in the demo engine with a live Alpaca/Benzinga

@@ -21,8 +21,10 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Inject the URL from env (never store secrets in alembic.ini).
+# Remap postgresql:// -> postgresql+psycopg:// (psycopg3, per pyproject.toml).
 _url = os.environ.get("ROSSBOT_DATABASE_URL")
 if _url:
+    _url = _url.replace("postgresql://", "postgresql+psycopg://", 1)
     config.set_main_option("sqlalchemy.url", _url)
 
 target_metadata = Base.metadata

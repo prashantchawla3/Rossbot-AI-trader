@@ -38,6 +38,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# Force UTF-8 output so § and → chars don't break Windows cp1252 console
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 from dotenv import load_dotenv
 load_dotenv(PROJECT_ROOT / ".env")
 
@@ -67,12 +71,12 @@ REPLAY_MARKET_STATE = MarketState.HOT
 
 FIXTURES = {
     "SLXN": {
-        "desc": "1st 1-min micro-pullback off $18→$30",
-        "spec": "spec §12 SLXN +$49k WIN",
+        "desc": "1st 1-min micro-pullback off $18->$30",
+        "spec": "spec s12 SLXN +$49k WIN",
     },
     "MLGO": {
         "desc": "+432% on 300M vol, all 5 pillars",
-        "spec": "spec §12 MLGO +$50k WIN",
+        "spec": "spec s12 MLGO +$50k WIN",
     },
 }
 
@@ -193,13 +197,26 @@ def _compute_rvol(today_vol: int, prior_vols: list[int], threshold: Decimal):
     return result, passes, None
 
 
+def _edgar_fetch(url: str) -> bytes:
+    """Fetch from SEC EDGAR using identity encoding to avoid gzip decode issues."""
+    import urllib.request
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "RossBot-Research rossbot-research@rossbot.ai",
+            "Accept-Encoding": "identity",  # disable gzip; _urllib_fetch doesn't decompress
+        },
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return resp.read()
+
+
 def _fetch_edgar_shares(symbol: str) -> tuple[int | None, str]:
     """Query SEC EDGAR for shares-outstanding (free, no API key required)."""
-    from adapters.edgar import _urllib_fetch, parse_ticker_map, parse_latest_shares
+    from adapters.edgar import parse_ticker_map, parse_latest_shares, pad_cik
 
-    ua = "RossBot-Research/0.1 rossbot-research@rossbot.ai"
     try:
-        raw_tickers = _urllib_fetch("https://www.sec.gov/files/company_tickers.json", ua)
+        raw_tickers = _edgar_fetch("https://www.sec.gov/files/company_tickers.json")
         ticker_map = parse_ticker_map(raw_tickers)
         cik = ticker_map.get(symbol.upper())
         if not cik:
@@ -208,7 +225,7 @@ def _fetch_edgar_shares(symbol: str) -> tuple[int | None, str]:
             f"https://data.sec.gov/api/xbrl/companyconcept/CIK{cik}"
             f"/dei/EntityCommonStockSharesOutstanding.json"
         )
-        raw = _urllib_fetch(url, ua)
+        raw = _edgar_fetch(url)
         parsed = parse_latest_shares(raw)
         if parsed is None:
             return None, f"EDGAR: no EntityCommonStockSharesOutstanding data for {symbol}"
@@ -384,7 +401,9 @@ def _write_db(
         from sqlalchemy.orm import Session
         from db.models import Symbol, SignalRow, Order, Fill, LedgerEntry, RiskEvent
 
-        eng = sa.create_engine(DATABASE_URL, echo=False)
+        # Remap postgresql:// -> postgresql+psycopg:// (psycopg3, per pyproject.toml)
+        db_url = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+        eng = sa.create_engine(db_url, echo=False)
         counts: dict[str, int] = {
             "risk_events": 0, "signals": 0, "orders": 0, "fills": 0, "ledger": 0,
         }
