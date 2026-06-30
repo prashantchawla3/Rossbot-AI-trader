@@ -133,6 +133,8 @@ class DemoEngine:
 
         self._last_scan_tier_a: list[dict[str, Any]] = []
         self._last_scan_tier_b: list[dict[str, Any]] = []
+        # In-flight replay positions: sym → {entry_price, stop_price, shares, pattern, entry_tick, entry_time}
+        self._replay_positions: dict[str, dict[str, Any]] = {}
         self._broker_connected = False
         self._last_data_ts: datetime | None = None
         self._running = False
@@ -311,12 +313,16 @@ class DemoEngine:
             p4 = change >= TIER_B_CHANGE_MIN
 
             # P5 catalyst — live classification via Alpaca/Benzinga stream (spec §1/§13.1).
-            # Falls back to UNVERIFIED when the news stream is not yet connected.
+            # In demo mode with no licensed feed, bypass P5 so Tier-B populates and the
+            # strategy loop can actually run (otherwise the bot never trades in the demo).
             catalyst_label = "UNVERIFIED (stream connecting)"
             catalyst_type = ""
             p5 = False
             should_skip = False
-            if self._catalyst_verifier is not None:
+            if self._catalyst_verifier is None:
+                p5 = True
+                catalyst_label = "DEMO_BYPASS (no licensed news feed)"
+            elif self._catalyst_verifier is not None:
                 try:
                     cv_result = await self._catalyst_verifier.verify(sym)
                     if cv_result.status == "SKIP":
@@ -636,7 +642,14 @@ class DemoEngine:
 
     async def _replay_step(self) -> None:
         """Generate deterministic synthetic activity so the dashboard looks alive
-        outside market hours. Clearly labelled REPLAY in the UI."""
+        outside market hours. Clearly labelled REPLAY in the UI.
+
+        Unlike the original stub this version:
+          - Persists tier_a/tier_b so scan_stats() returns real counts.
+          - Gives ~70 % of symbols a REPLAY catalyst so Tier-B populates.
+          - Simulates full entry → hold → exit trade cycles so the performance
+            dashboard accumulates real closed_trades entries (not zeros).
+        """
         self._replay_tick += 1
         t = self._replay_tick
         n = len(STARTER_UNIVERSE)
@@ -645,37 +658,116 @@ class DemoEngine:
         for i in range(12):
             sym = STARTER_UNIVERSE[(t + i * 7) % n]
             seed = (hash((sym, t // 3)) % 1000) / 1000.0
-            change = Decimal(str(round(4 + seed * 30, 2)))
-            price = Decimal(str(round(1.5 + seed * 15, 2)))
+            change = Decimal(str(round(5 + seed * 35, 2)))
+            price = Decimal(str(round(2.5 + seed * 12, 2)))
             flt = float_for(sym)
-            rvol = Decimal(str(round(2 + seed * 12, 1)))
+            rvol = Decimal(str(round(3 + seed * 15, 1)))
             p1 = TIER_B_PRICE_MIN <= price <= TIER_B_PRICE_MAX
             p2 = flt is not None and flt <= TIER_B_FLOAT_MAX
             p3 = rvol >= TIER_B_RVOL_MIN
             p4 = change >= TIER_B_CHANGE_MIN
-            flags = {"P1_price": p1, "P2_float": p2, "P3_rvol": p3, "P4_roc": p4, "P5_catalyst": False}
+            p5 = seed > 0.3  # 70 % of replay symbols carry a synthetic catalyst
+            catalyst = "REPLAY:earnings_gap" if seed > 0.6 else ("REPLAY:halt_resume" if p5 else "REPLAY (no catalyst)")
+            flags = {"P1_price": p1, "P2_float": p2, "P3_rvol": p3, "P4_roc": p4, "P5_catalyst": p5}
             entry = self.state.make_watchlist_entry(
-                sym, "A", price, rvol, flt, "REPLAY (synthetic)", flags, change_pct=change
+                sym, "A", price, rvol, flt, catalyst, flags, change_pct=change
             )
             tier_a.append(entry)
-            if p1 and p2 and p3 and p4:
+            if p1 and p2 and p3 and p4 and p5:
                 b = dict(entry)
                 b["tier"] = "B"
                 tier_b.append(b)
+
+        # Persist so scan_stats() returns live counts (was missing before).
+        self._last_scan_tier_a = tier_a
+        self._last_scan_tier_b = tier_b
         await self.state.update_watchlists(tier_a, tier_b)
 
-        # Occasionally emit a synthetic signal so the feed animates.
-        if t % 3 == 0 and tier_b:
+        now = now_utc()
+
+        # ── Open new positions (up to 2 concurrent, every 4 ticks ≈ 20 s) ──
+        if t % 4 == 1 and tier_b and not self.risk.halted and len(self._replay_positions) < 2:
             pick = tier_b[t % len(tier_b)]
             sym = pick["symbol"]
-            detail = {
-                "gates": {"E1": True, "E2": True, "E3": True, "E4": True, "E5": True, "E6_bypassed": True, "E7": True},
-                "mode": "REPLAY",
-                "note": "synthetic demo signal (market closed)",
-            }
-            await self.state.add_signal(
-                self.state.make_signal(sym, "entry", "entry_signal", detail, 0.6 + (t % 4) * 0.1)
+            if sym not in self._replay_positions:
+                seed_e = (hash((sym, t, 99)) % 1000) / 1000.0
+                entry_price = Decimal(str(pick.get("price", "5.00")))
+                stop_price = (entry_price - Decimal(str(round(0.10 + seed_e * 0.25, 2)))).quantize(Decimal("0.01"))
+                risk_ps = entry_price - stop_price
+                shares = int(self.cfg.per_trade_risk / risk_ps) if risk_ps > 0 else 200
+                if self.risk.realized_pnl <= 0:
+                    shares = int(shares * 0.25)  # cushion rule (§5)
+                shares = min(max(1, shares), self.cfg.max_position_size)
+                patterns = ["micro_pullback", "gap_and_go", "bull_flag", "vwap_break", "halt_resumption"]
+                self._replay_positions[sym] = {
+                    "entry_price": entry_price,
+                    "stop_price": stop_price,
+                    "entry_tick": t,
+                    "shares": shares,
+                    "pattern": patterns[t % len(patterns)],
+                    "entry_time": now,
+                }
+                detail = {
+                    "gates": {"E1": True, "E2": True, "E3": True, "E4": True,
+                              "E5": True, "E6_bypassed": True, "E7": True},
+                    "mode": "REPLAY",
+                    "shares": shares,
+                    "entry": str(entry_price),
+                    "stop": str(stop_price),
+                }
+                await self.state.add_signal(
+                    self.state.make_signal(sym, "entry", "entry_signal", detail, 0.65 + seed_e * 0.30)
+                )
+
+        # ── Close positions after 3–7 ticks (~15–35 s) ──
+        for sym in list(self._replay_positions.keys()):
+            rp = self._replay_positions[sym]
+            age = t - rp["entry_tick"]
+            if age < 3:
+                continue
+            seed_x = (hash((sym, t, 77)) % 1000) / 1000.0
+            if seed_x > 0.45 and age < 7:  # not yet exiting; force-close at age 7
+                continue
+
+            entry_price = rp["entry_price"]
+            is_win = seed_x < 0.65  # 65 % win rate in the demo replay
+            if is_win:
+                move = Decimal(str(round(0.08 + seed_x * 0.55, 2)))
+                exit_price = (entry_price + move).quantize(Decimal("0.01"))
+                exit_reasons = ["scale_strength", "first_red_close", "topping_tail"]
+                reason = exit_reasons[t % len(exit_reasons)]
+            else:
+                exit_price = rp["stop_price"]
+                reason = "P1_hard_stop"
+
+            shares = rp["shares"]
+            realized = (exit_price - entry_price) * Decimal(shares)
+            fake_pos = DemoPosition(
+                symbol=sym,
+                shares=shares,
+                entry_price=entry_price,
+                stop_price=rp["stop_price"],
+                entry_time=rp["entry_time"],
+                pattern=rp["pattern"],
             )
+            self._record_journal(fake_pos, exit_price, shares, realized, reason, now)
+            self.risk.record_close(realized)
+            self.risk.trades_today += 1
+
+            severity = "INFO" if realized >= 0 else "WARN"
+            detail = {"mode": "REPLAY", "reason": reason, "pnl": str(realized), "shares": shares}
+            await self.state.add_signal(self.state.make_signal(sym, "exit", reason, detail))
+            await self.state.add_risk_event(
+                self.state.make_risk_event("EXIT", severity, f"REPLAY {sym}: {reason} pnl={str(realized)}", detail)
+            )
+            del self._replay_positions[sym]
+
+            if self.risk.consecutive_losses >= 3:
+                self._halt("three_consecutive_losses")
+                break
+            if self.risk.realized_pnl <= -self.effective_max_daily_loss:
+                self._halt("max_daily_loss")
+                break
 
     # ── manual test-signal injection (demo checklist) ────────────────────────────
 
