@@ -1577,3 +1577,162 @@
   .perf-scan-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
+/* ── Performance page — hero chart ─────────────────────────────────────────── */
+
+.perf-hero-card {
+  padding: 0;
+  overflow: hidden;
+}
+
+.perf-hero-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 20px 24px 18px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.perf-hero-stats {
+  display: flex;
+  gap: 28px;
+  flex-shrink: 0;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.perf-hero-stat-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 80px;
+}
+
+.perf-hero-stat-val {
+  font-size: 1.15rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  color: var(--foreground);
+}
+
+/* Overlay on chart when no data yet */
+.perf-chart-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  pointer-events: none;
+  background: transparent;
+}
+
+/* ── Metrics strip below the hero chart ───────────────────────────────────── */
+
+.perf-metrics-strip {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  background: var(--card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow-xs);
+}
+
+.perf-strip-item {
+  padding: 14px 18px;
+  border-right: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.perf-strip-item:last-child {
+  border-right: none;
+}
+
+.perf-strip-val {
+  font-size: 1.05rem;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  line-height: 1.2;
+  color: var(--foreground);
+}
+
+/* ── Live trade feed ──────────────────────────────────────────────────────── */
+
+.trade-feed {
+  display: flex;
+  flex-direction: column;
+}
+
+.trade-feed-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 10px;
+  border-radius: 8px;
+  border-left: 3px solid transparent;
+  transition: background 0.12s;
+}
+
+.trade-feed-item:hover {
+  background: var(--muted);
+}
+
+.tfi-win       { border-left-color: var(--pos); }
+.tfi-loss      { border-left-color: #f59e0b; }
+.tfi-violation { border-left-color: var(--neg); }
+
+.tfi-dot {
+  font-size: 1rem;
+  flex-shrink: 0;
+  width: 18px;
+  text-align: center;
+  line-height: 1;
+}
+
+.tfi-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tfi-top,
+.tfi-bot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tfi-pnl {
+  flex-shrink: 0;
+  text-align: right;
+}
+
+/* ── Responsive overrides ─────────────────────────────────────────────────── */
+
+@media (max-width: 1200px) {
+  .perf-metrics-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .perf-strip-item:nth-child(3) { border-right: none; }
+  .perf-strip-item:nth-child(n+4) { border-top: 1px solid var(--color-border); }
+}
+
+@media (max-width: 720px) {
+  .perf-hero-header { padding: 16px; }
+  .perf-hero-stats { gap: 16px; }
+  .perf-metrics-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .perf-strip-item:nth-child(2) { border-right: none; }
+  .perf-strip-item:nth-child(3) { border-right: 1px solid var(--color-border); border-top: 1px solid var(--color-border); }
+  .perf-strip-item:nth-child(n+3) { border-top: 1px solid var(--color-border); }
+}
+

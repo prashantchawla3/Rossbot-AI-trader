@@ -2,15 +2,15 @@
 
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { api } from '@/lib/api'
-import { MetricCard } from '@/components/MetricCard'
 import { PnLChart } from '@/components/PnLChart'
+import type { EquityPoint } from '@/components/PnLChart'
 import type {
   PerformanceSummary,
   TradeLogEntry,
   ScanStats,
   PerfWsMessage,
 } from '@/lib/types'
-import type { LineData, UTCTimestamp } from 'lightweight-charts'
+import type { UTCTimestamp } from 'lightweight-charts'
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -87,16 +87,71 @@ function patternLabel(p: string): string {
   return map[p] ?? p
 }
 
-// ── equity curve adapter ─────────────────────────────────────────────────────
-
-function toLineData(curve: PerformanceSummary['equity_curve']): LineData[] {
+function toEquityCurve(curve: PerformanceSummary['equity_curve']): EquityPoint[] {
   return curve.map((pt) => ({
     time: Math.floor(new Date(pt.ts).getTime() / 1000) as UTCTimestamp,
     value: Number(pt.cumulative_pnl),
   }))
 }
 
-// ── daily P&L bar chart ──────────────────────────────────────────────────────
+// ── Live trade feed ──────────────────────────────────────────────────────────
+
+function RecentTradesFeed({ trades, total }: { trades: TradeLogEntry[]; total: number }) {
+  return (
+    <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
+      <header className="card-head">
+        <h3>Live Trade Feed</h3>
+        <span className="muted small">{total} total · showing {trades.length}</span>
+      </header>
+      {trades.length === 0 ? (
+        <div className="perf-empty-chart">
+          <p className="muted small">No trades yet this session.</p>
+        </div>
+      ) : (
+        <div className="trade-feed">
+          {trades.map((t) => {
+            const pnl = Number(t.realized_pnl)
+            const typeClass = !t.is_disciplined ? 'tfi-violation' : pnl > 0 ? 'tfi-win' : 'tfi-loss'
+            return (
+              <div key={t.trade_id} className={`trade-feed-item ${typeClass}`}>
+                <span className="tfi-dot" style={{ color: tradeDotColor(t) }}>
+                  {tradeDot(t)}
+                </span>
+                <div className="tfi-body">
+                  <div className="tfi-top">
+                    <span className="mono strong">{t.symbol}</span>
+                    <span className="small muted">{patternLabel(t.pattern_type)}</span>
+                  </div>
+                  <div className="tfi-bot">
+                    <span className="small muted">{exitReasonLabel(t.exit_reason)}</span>
+                    <span className="mono small muted">
+                      {new Date(t.exit_ts).toLocaleTimeString('en-US', {
+                        timeZone: 'America/New_York',
+                        hour12: false,
+                      })}
+                    </span>
+                  </div>
+                </div>
+                <div className="tfi-pnl">
+                  <span className={`mono ${pnl >= 0 ? 'pos' : 'neg'}`}>
+                    {pnl >= 0 ? '+' : '-'}${Math.abs(pnl).toFixed(2)}
+                  </span>
+                  {t.r_multiple !== null && (
+                    <div className="mono small muted" style={{ textAlign: 'right' }}>
+                      {t.r_multiple.toFixed(2)}R
+                    </div>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Daily P&L bar chart ──────────────────────────────────────────────────────
 
 function DailyPnLChart({
   bars,
@@ -123,12 +178,6 @@ function DailyPnLChart({
   const maxVal = Math.max(...values.map(Math.abs), 1)
   const peak = Number(peakPnl)
   const maxLossN = Math.abs(Number(maxLoss))
-
-  // Reference lines as fractions of chart height
-  const warnLine = peak > 0 ? -(peak * warnPct) : null
-  const hardLine = peak > 0 ? -(peak * hardPct) : null
-  const lossLine = -maxLossN
-
   const refMax = Math.max(maxVal, maxLossN, peak > 0 ? peak * hardPct : 0) * 1.15 || 1
 
   return (
@@ -161,87 +210,71 @@ function DailyPnLChart({
           )
         })}
       </div>
-
-      {/* Reference lines legend */}
       <div className="perf-ref-lines">
-        {warnLine !== null && (
+        {peak > 0 && (
           <span className="ref-line-badge warn">
-            Give-back warn ({pct(warnPct, 0)} of peak ${Math.abs(warnLine).toFixed(0)})
+            Give-back warn ({pct(warnPct, 0)} · ${(peak * warnPct).toFixed(0)})
           </span>
         )}
-        {hardLine !== null && (
+        {peak > 0 && (
           <span className="ref-line-badge hard">
-            Give-back halt ({pct(hardPct, 0)} of peak ${Math.abs(hardLine).toFixed(0)})
+            Give-back halt ({pct(hardPct, 0)} · ${(peak * hardPct).toFixed(0)})
           </span>
         )}
-        <span className="ref-line-badge loss">
-          Max daily loss ${maxLossN.toFixed(0)}
-        </span>
+        <span className="ref-line-badge loss">Max daily loss ${maxLossN.toFixed(0)}</span>
       </div>
     </div>
   )
 }
 
-// ── empty state ──────────────────────────────────────────────────────────────
+// ── Empty-state scan summary ─────────────────────────────────────────────────
 
-function EmptyState({ stats }: { stats: ScanStats | null }) {
+function ScanSummary({ stats }: { stats: ScanStats | null }) {
+  if (!stats) return null
   return (
-    <div className="perf-empty-state">
-      <div className="card perf-empty-card">
-        <div className="perf-empty-icon">📊</div>
-        <h2>Bot is live-monitoring — no trades have met entry criteria yet</h2>
-        <p className="muted">
-          Every number on this dashboard traces to a real fill. The bot will not enter a trade
-          until all seven entry gates (E1–E7) pass and the risk gate approves. This is not
-          inaction — it&apos;s discipline.
-        </p>
-
-        {stats && (
-          <div className="perf-scan-summary">
-            <div className="perf-scan-grid">
-              <div className="perf-scan-cell">
-                <span className="perf-scan-num">{stats.symbols_scanned}</span>
-                <span className="perf-scan-lbl">Symbols scanned</span>
-              </div>
-              <div className="perf-scan-cell">
-                <span className="perf-scan-num">{stats.tier_a_count}</span>
-                <span className="perf-scan-lbl">Tier-A (wide net)</span>
-              </div>
-              <div className="perf-scan-cell">
-                <span className="perf-scan-num">{stats.tier_b_count}</span>
-                <span className="perf-scan-lbl">Tier-B (all 5 pillars)</span>
-              </div>
-              <div className="perf-scan-cell">
-                <span className="perf-scan-num neg">
-                  {stats.tier_a_count - stats.tier_b_count}
-                </span>
-                <span className="perf-scan-lbl">Rejected from Tier-B</span>
-              </div>
-            </div>
-
-            {stats.rejected_from_tier_b.length > 0 && (
-              <div className="perf-rejections">
-                <p className="eyebrow" style={{ marginBottom: '0.5rem' }}>
-                  Why symbols were excluded from trading:
-                </p>
-                <div className="perf-rejection-list">
-                  {stats.rejected_from_tier_b.slice(0, 12).map((r) => (
-                    <div key={r.symbol} className="perf-rejection-row">
-                      <span className="mono strong">{r.symbol}</span>
-                      <span className="muted small">{r.pillars_failed.join(', ')}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
+    <div className="card">
+      <header className="card-head">
+        <h3>Scanner Activity</h3>
+        <span className="muted small">Symbols evaluated since session start</span>
+      </header>
+      <div className="perf-scan-grid" style={{ marginBottom: '1rem' }}>
+        <div className="perf-scan-cell">
+          <span className="perf-scan-num">{stats.symbols_scanned}</span>
+          <span className="perf-scan-lbl">Symbols scanned</span>
+        </div>
+        <div className="perf-scan-cell">
+          <span className="perf-scan-num">{stats.tier_a_count}</span>
+          <span className="perf-scan-lbl">Tier-A (wide net)</span>
+        </div>
+        <div className="perf-scan-cell">
+          <span className="perf-scan-num">{stats.tier_b_count}</span>
+          <span className="perf-scan-lbl">Tier-B (all 5 pillars)</span>
+        </div>
+        <div className="perf-scan-cell">
+          <span className="perf-scan-num neg">{stats.tier_a_count - stats.tier_b_count}</span>
+          <span className="perf-scan-lbl">Rejected from Tier-B</span>
+        </div>
       </div>
+      {stats.rejected_from_tier_b.length > 0 && (
+        <div className="perf-rejections">
+          <p className="eyebrow" style={{ marginBottom: '0.5rem' }}>
+            Why symbols were excluded:
+          </p>
+          <div className="perf-rejection-list">
+            {stats.rejected_from_tier_b.slice(0, 12).map((r) => (
+              <div key={r.symbol} className="perf-rejection-row">
+                <span className="mono strong">{r.symbol}</span>
+                <span className="muted small">{r.pillars_failed.join(', ')}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
-// ── main page ─────────────────────────────────────────────────────────────────
+// ── Main page ────────────────────────────────────────────────────────────────
 
 export default function PerformancePage() {
   const [summary, setSummary] = useState<PerformanceSummary | null>(null)
@@ -251,6 +284,7 @@ export default function PerformancePage() {
   const [page, setPage] = useState(1)
   const [pages, setPages] = useState(1)
   const [err, setErr] = useState<string | null>(null)
+  const [wsConnected, setWsConnected] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const PAGE_SIZE = 50
 
@@ -276,276 +310,391 @@ export default function PerformancePage() {
     loadAll(page)
   }, [loadAll, page])
 
-  // WebSocket: receive trade_closed events and refresh
+  // WebSocket: receive live trade events and refresh
   useEffect(() => {
-    const ws = new WebSocket(WS_URL)
-    wsRef.current = ws
+    const connect = () => {
+      const ws = new WebSocket(WS_URL)
+      wsRef.current = ws
 
-    ws.onmessage = (evt) => {
-      try {
-        const msg = JSON.parse(evt.data) as PerfWsMessage
-        if (msg.type === 'trade_closed' || msg.type === 'performance_snapshot') {
-          // Refresh all data on any trade event
-          loadAll(1)
-          setPage(1)
+      ws.onopen = () => setWsConnected(true)
+      ws.onclose = () => {
+        setWsConnected(false)
+        // Reconnect after 3s
+        setTimeout(connect, 3000)
+      }
+      ws.onerror = () => ws.close()
+
+      ws.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data) as PerfWsMessage
+          if (msg.type === 'trade_closed' || msg.type === 'performance_snapshot') {
+            loadAll(1)
+            setPage(1)
+          }
+        } catch {
+          // ignore parse errors
         }
-      } catch {
-        // ignore parse errors
+      }
+
+      const ping = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.send('ping')
+      }, 25000)
+
+      ws.onclose = () => {
+        clearInterval(ping)
+        setWsConnected(false)
+        setTimeout(connect, 3000)
       }
     }
 
-    const ping = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) ws.send('ping')
-    }, 25000)
+    connect()
 
     return () => {
-      clearInterval(ping)
-      ws.close()
+      wsRef.current?.close()
       wsRef.current = null
     }
   }, [loadAll])
 
-  const equityCurve: LineData[] = summary?.equity_curve ? toLineData(summary.equity_curve) : []
+  const equityCurve: EquityPoint[] = summary?.equity_curve ? toEquityCurve(summary.equity_curve) : []
   const hasData = (summary?.total_trades ?? 0) > 0
-
-  if (!hasData && summary !== null) {
-    return (
-      <div className="view">
-        <div className="page-head">
-          <div>
-            <h1>Performance</h1>
-            <p className="muted">Real-time trading performance — every number traces to a real fill.</p>
-          </div>
-          <button className="btn btn-primary btn-sm" onClick={() => loadAll(1)}>
-            Refresh
-          </button>
-        </div>
-        {err && <p className="error-text">{err}</p>}
-        <EmptyState stats={scanStats} />
-      </div>
-    )
-  }
+  const pnlValue = summary ? Number(summary.realized_pnl) : 0
+  const sentiment = summary ? sentimentFromPnl(summary.realized_pnl) : 'neutral'
 
   return (
     <div className="view">
+
+      {/* ── Header ── */}
       <div className="page-head">
         <div>
           <h1>Performance</h1>
-          <p className="muted">
+          <p className="muted lede" style={{ margin: '4px 0 0', fontSize: '0.9rem' }}>
             Real-time trading performance — every number traces to a real fill.
           </p>
         </div>
-        <button className="btn btn-primary btn-sm" onClick={() => loadAll(page)}>
-          Refresh
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '7px',
+              height: '32px',
+              padding: '0 14px',
+              borderRadius: '999px',
+              border: '1px solid var(--border)',
+              background: 'var(--card)',
+              fontSize: '0.78rem',
+              fontWeight: 600,
+              letterSpacing: '0.02em',
+              color: 'var(--color-text)',
+            }}
+          >
+            <span
+              className={wsConnected ? 'live-dot pulse' : 'live-dot connecting'}
+              style={{ width: 8, height: 8, borderRadius: '50%', flexShrink: 0 }}
+            />
+            {wsConnected ? 'LIVE' : 'CONNECTING'}
+            {hasData && (
+              <span className="muted" style={{ fontWeight: 500 }}>
+                · {summary!.total_trades} trade{summary!.total_trades !== 1 ? 's' : ''}
+              </span>
+            )}
+          </span>
+          <button className="btn btn-primary btn-sm" onClick={() => loadAll(page)}>
+            Refresh
+          </button>
+        </div>
       </div>
 
       {err && <p className="error-text">{err}</p>}
 
-      {/* ── Summary metrics ── */}
-      {summary && (
-        <div className="metrics-grid">
-          <MetricCard
-            label="Win Rate"
-            value={summary.win_rate_str}
-            sentiment={
-              summary.win_rate_value !== null && summary.win_rate_value >= 0.6
-                ? 'positive'
-                : summary.win_rate_value !== null
-                ? 'negative'
-                : 'neutral'
-            }
-            hint="Win % with trade count always visible. ≥ 60% over 10+ trades is the U6 live-trading gate."
-          />
-          <MetricCard
-            label="Realized P&L"
-            value={fmtPnl(summary.realized_pnl)}
-            sentiment={sentimentFromPnl(summary.realized_pnl)}
-            hint="Sum of all closed-trade P&L this session."
-          />
-          <MetricCard
-            label="Max Drawdown"
-            value={pct(summary.max_drawdown_pct)}
-            sentiment={summary.max_drawdown_pct > 0.15 ? 'negative' : 'neutral'}
-            hint="Largest peak-to-trough drop in cumulative P&L this session."
-          />
-          <MetricCard
-            label="Give-Back from Peak"
-            value={pct(summary.give_back_pct_from_peak)}
-            sentiment={summary.give_back_pct_from_peak > summary.give_back_hard_pct ? 'negative' : 'neutral'}
-            hint="How much of the session's peak profit has been given back. Triggers at 25% (warn) and 50% (halt)."
-          />
-          <MetricCard
-            label="Avg R — Winners"
-            value={summary.avg_r_winners !== null ? `${summary.avg_r_winners.toFixed(2)}R` : '—'}
-            sentiment="positive"
-            hint="Average R-multiple for winning trades. R = P&L ÷ risk-per-share."
-          />
-          <MetricCard
-            label="Avg R — Losers"
-            value={summary.avg_r_losers !== null ? `${summary.avg_r_losers.toFixed(2)}R` : '—'}
-            sentiment="negative"
-            hint="Average R-multiple for losing trades. Disciplined stops should read close to -1R."
-          />
-          <MetricCard
-            label="Rolling Win Rate (5)"
-            value={pct(summary.rolling_5_win_rate)}
-            hint="Win rate over the last 5 trades. More responsive than all-time; shows if momentum is shifting."
-          />
-          <MetricCard
-            label="Rolling Win Rate (20)"
-            value={pct(summary.rolling_20_win_rate)}
-            hint="Win rate over the last 20 trades. Smoothed signal for medium-term consistency."
-          />
-          <MetricCard
-            label="Rule Violations"
-            value={String(summary.rule_violation_count)}
-            sentiment={summary.rule_violation_count > 0 ? 'negative' : 'positive'}
-            hint="Should always be 0. Any non-zero value means a Pxx exit rule was bypassed."
-          />
+      {/* ── Hero: Equity curve (ALWAYS rendered) ── */}
+      <div className="card perf-hero-card">
+        {/* Chart header — P&L value + key stats */}
+        <div className="perf-hero-header">
+          <div>
+            <div className="eyebrow" style={{ marginBottom: '6px' }}>
+              Cumulative P&amp;L · Equity Curve
+            </div>
+            {summary ? (
+              <div
+                className={`perf-hero-pnl ${sentiment}`}
+                style={{
+                  fontSize: '2.2rem',
+                  fontWeight: 700,
+                  fontFamily: 'var(--font-mono)',
+                  lineHeight: 1.1,
+                  letterSpacing: '-0.02em',
+                  color:
+                    sentiment === 'positive'
+                      ? 'var(--state-success)'
+                      : sentiment === 'negative'
+                      ? 'var(--state-error)'
+                      : 'var(--foreground)',
+                }}
+              >
+                {fmtPnl(summary.realized_pnl)}
+              </div>
+            ) : (
+              <div
+                style={{
+                  width: 140,
+                  height: 32,
+                  borderRadius: 8,
+                  background: 'var(--muted)',
+                  opacity: 0.5,
+                }}
+              />
+            )}
+          </div>
+
+          {summary && hasData && (
+            <div className="perf-hero-stats">
+              <div className="perf-hero-stat-cell">
+                <div className="eyebrow">Win Rate</div>
+                <div
+                  className="perf-hero-stat-val"
+                  style={{
+                    color:
+                      summary.win_rate_value !== null && summary.win_rate_value >= 0.6
+                        ? 'var(--state-success)'
+                        : summary.win_rate_value !== null
+                        ? 'var(--state-error)'
+                        : undefined,
+                  }}
+                >
+                  {summary.win_rate_str}
+                </div>
+              </div>
+              <div className="perf-hero-stat-cell">
+                <div className="eyebrow">Max Drawdown</div>
+                <div
+                  className="perf-hero-stat-val"
+                  style={{
+                    color: summary.max_drawdown_pct > 0.15 ? 'var(--state-error)' : undefined,
+                  }}
+                >
+                  {pct(summary.max_drawdown_pct)}
+                </div>
+              </div>
+              <div className="perf-hero-stat-cell">
+                <div className="eyebrow">Violations</div>
+                <div
+                  className="perf-hero-stat-val"
+                  style={{
+                    color:
+                      summary.rule_violation_count > 0
+                        ? 'var(--state-error)'
+                        : 'var(--state-success)',
+                  }}
+                >
+                  {summary.rule_violation_count}
+                </div>
+              </div>
+              <div className="perf-hero-stat-cell">
+                <div className="eyebrow">Give-Back</div>
+                <div
+                  className="perf-hero-stat-val"
+                  style={{
+                    color:
+                      summary.give_back_pct_from_peak > summary.give_back_hard_pct
+                        ? 'var(--state-error)'
+                        : undefined,
+                  }}
+                >
+                  {pct(summary.give_back_pct_from_peak)}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* The chart itself */}
+        <div style={{ position: 'relative' }}>
+          <PnLChart data={equityCurve} height={300} />
+          {equityCurve.length === 0 && summary !== null && (
+            <div className="perf-chart-overlay">
+              <div style={{ fontSize: '1.5rem', marginBottom: '6px' }}>📈</div>
+              <div className="muted small">
+                {hasData
+                  ? 'Equity curve loading…'
+                  : 'Bot is live-monitoring — equity curve will draw here as trades close'}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Metrics strip (visible only when there are trades) ── */}
+      {summary && hasData && (
+        <div className="perf-metrics-strip">
+          <div className="perf-strip-item">
+            <div className="eyebrow">Avg R — Winners</div>
+            <div className="perf-strip-val pos">
+              {summary.avg_r_winners !== null ? `${summary.avg_r_winners.toFixed(2)}R` : '—'}
+            </div>
+          </div>
+          <div className="perf-strip-item">
+            <div className="eyebrow">Avg R — Losers</div>
+            <div className="perf-strip-val neg">
+              {summary.avg_r_losers !== null ? `${summary.avg_r_losers.toFixed(2)}R` : '—'}
+            </div>
+          </div>
+          <div className="perf-strip-item">
+            <div className="eyebrow">Rolling Win (5)</div>
+            <div className="perf-strip-val">{pct(summary.rolling_5_win_rate)}</div>
+          </div>
+          <div className="perf-strip-item">
+            <div className="eyebrow">Rolling Win (20)</div>
+            <div className="perf-strip-val">{pct(summary.rolling_20_win_rate)}</div>
+          </div>
+          <div className="perf-strip-item">
+            <div className="eyebrow">Peak P&amp;L</div>
+            <div className="perf-strip-val pos">
+              {Number(summary.peak_pnl) > 0 ? `+$${Number(summary.peak_pnl).toFixed(2)}` : '—'}
+            </div>
+          </div>
+          <div className="perf-strip-item">
+            <div className="eyebrow">Max Daily Loss Limit</div>
+            <div className="perf-strip-val neg">
+              -${Math.abs(Number(summary.max_daily_loss_limit)).toFixed(0)}
+            </div>
+          </div>
         </div>
       )}
 
-      {/* ── Equity curve (primary visual) ── */}
-      <div className="card">
-        <header className="card-head">
-          <h3>Equity Curve</h3>
-          <span className="muted small">
-            Cumulative realized P&L — consistency over peaks
+      {/* ── Two-column: live feed + daily P&L (when has data) ── */}
+      {hasData && summary && (
+        <div className="content-grid">
+          <RecentTradesFeed trades={trades.slice(0, 10)} total={tradesTotal} />
+          <div className="card">
+            <header className="card-head">
+              <h3>Daily P&amp;L</h3>
+              <span className="muted small">vs give-back guardrails</span>
+            </header>
+            <DailyPnLChart
+              bars={summary.daily_pnl}
+              maxLoss={summary.max_daily_loss_limit}
+              warnPct={summary.give_back_warn_pct}
+              hardPct={summary.give_back_hard_pct}
+              peakPnl={summary.peak_pnl}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* ── Scanner activity (when no trades yet) ── */}
+      {!hasData && summary !== null && <ScanSummary stats={scanStats} />}
+
+      {/* ── Color legend ── */}
+      {hasData && (
+        <div className="perf-legend">
+          <span className="perf-legend-item">
+            <span style={{ color: 'var(--state-success)' }}>▲</span> Winner
           </span>
-        </header>
-        <div className="perf-chart-note">
-          <span className="muted small">
-            CEO focus: drawdown depth + duration, not just all-time peak. A flat, rising
-            line with shallow drawdowns beats a spikey line with the same endpoint.
+          <span className="perf-legend-item">
+            <span style={{ color: '#f59e0b' }}>▼</span> Disciplined stop (P1–P8)
+          </span>
+          <span className="perf-legend-item">
+            <span style={{ color: 'var(--state-error)' }}>●</span> Rule violation (target: 0)
           </span>
         </div>
-        {equityCurve.length > 0 ? (
-          <PnLChart data={equityCurve} height={220} />
-        ) : (
-          <div className="perf-empty-chart">
-            <p className="muted small">Equity curve populates as trades close.</p>
-          </div>
-        )}
-      </div>
+      )}
 
-      {/* ── Daily P&L bar chart ── */}
-      {summary && (
+      {/* ── Full trade log ── */}
+      {hasData && (
         <div className="card">
           <header className="card-head">
-            <h3>Daily P&L vs Risk Guardrails</h3>
+            <h3>Trade Log</h3>
             <span className="muted small">
-              Reference lines show where give-back warning and halt thresholds fall
+              {tradesTotal} trade{tradesTotal !== 1 ? 's' : ''} — newest first
             </span>
           </header>
-          <DailyPnLChart
-            bars={summary.daily_pnl}
-            maxLoss={summary.max_daily_loss_limit}
-            warnPct={summary.give_back_warn_pct}
-            hardPct={summary.give_back_hard_pct}
-            peakPnl={summary.peak_pnl}
-          />
-        </div>
-      )}
-
-      {/* ── Color-coding legend ── */}
-      <div className="perf-legend">
-        <span className="perf-legend-item">
-          <span style={{ color: 'var(--state-success)' }}>▲</span> Winner (disciplined entry + profitable exit)
-        </span>
-        <span className="perf-legend-item">
-          <span style={{ color: '#f59e0b' }}>▼</span> Disciplined stop (P1–P8 rule fired correctly)
-        </span>
-        <span className="perf-legend-item">
-          <span style={{ color: 'var(--state-error)' }}>●</span> Rule violation (should be 0)
-        </span>
-      </div>
-
-      {/* ── Trade log table ── */}
-      <div className="card">
-        <header className="card-head">
-          <h3>Trade Log</h3>
-          <span className="muted small">{tradesTotal} trade{tradesTotal !== 1 ? 's' : ''} — newest first</span>
-        </header>
-        <div style={{ overflowX: 'auto' }}>
-          <table className="table compact">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Symbol</th>
-                <th>Pattern</th>
-                <th>Entry</th>
-                <th>Exit</th>
-                <th>Shares</th>
-                <th>P&L</th>
-                <th>R</th>
-                <th>Exit Rule</th>
-                <th>Running P&L</th>
-                <th>Exit Time</th>
-              </tr>
-            </thead>
-            <tbody>
-              {trades.length === 0 && (
+          <div style={{ overflowX: 'auto' }}>
+            <table className="table compact">
+              <thead>
                 <tr>
-                  <td colSpan={11} className="muted">No trades yet this session.</td>
+                  <th>#</th>
+                  <th>Symbol</th>
+                  <th>Pattern</th>
+                  <th>Entry</th>
+                  <th>Exit</th>
+                  <th>Shares</th>
+                  <th>P&amp;L</th>
+                  <th>R</th>
+                  <th>Exit Rule</th>
+                  <th>Running P&amp;L</th>
+                  <th>Exit Time</th>
                 </tr>
-              )}
-              {trades.map((t) => {
-                const pnl = Number(t.realized_pnl)
-                const pnlStr = `${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}`
-                const rPnl = Number(t.day_pnl_running_total)
-                return (
-                  <tr key={t.trade_id} className={tradeRowClass(t)}>
-                    <td className="mono muted">{t.trade_id}</td>
-                    <td className="mono strong">{t.symbol}</td>
-                    <td className="small">{patternLabel(t.pattern_type)}</td>
-                    <td className="mono">${t.entry_price}</td>
-                    <td className="mono">${t.exit_price}</td>
-                    <td className="mono">{t.shares}</td>
-                    <td className={`mono ${pnl >= 0 ? 'pos' : 'neg'}`}>
-                      <span style={{ marginRight: '0.3em', color: tradeDotColor(t) }}>
-                        {tradeDot(t)}
-                      </span>
-                      {pnlStr}
-                    </td>
-                    <td className="mono">
-                      {t.r_multiple !== null ? `${t.r_multiple.toFixed(2)}R` : '—'}
-                    </td>
-                    <td className="small">{exitReasonLabel(t.exit_reason)}</td>
-                    <td className={`mono ${rPnl >= 0 ? 'pos' : 'neg'}`}>
-                      {rPnl >= 0 ? '+' : '-'}${Math.abs(rPnl).toFixed(2)}
-                    </td>
-                    <td className="mono small muted">
-                      {new Date(t.exit_ts).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour12: false })}
+              </thead>
+              <tbody>
+                {trades.length === 0 && (
+                  <tr>
+                    <td colSpan={11} className="muted">
+                      No trades yet this session.
                     </td>
                   </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Pagination */}
-        {pages > 1 && (
-          <div className="perf-pagination">
-            <button
-              className="btn btn-sm"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-            >
-              ← Prev
-            </button>
-            <span className="muted small">Page {page} / {pages}</span>
-            <button
-              className="btn btn-sm"
-              disabled={page >= pages}
-              onClick={() => setPage((p) => Math.min(pages, p + 1))}
-            >
-              Next →
-            </button>
+                )}
+                {trades.map((t) => {
+                  const pnl = Number(t.realized_pnl)
+                  const pnlStr = `${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}`
+                  const rPnl = Number(t.day_pnl_running_total)
+                  return (
+                    <tr key={t.trade_id} className={tradeRowClass(t)}>
+                      <td className="mono muted">{t.trade_id}</td>
+                      <td className="mono strong">{t.symbol}</td>
+                      <td className="small">{patternLabel(t.pattern_type)}</td>
+                      <td className="mono">${t.entry_price}</td>
+                      <td className="mono">${t.exit_price}</td>
+                      <td className="mono">{t.shares}</td>
+                      <td className={`mono ${pnl >= 0 ? 'pos' : 'neg'}`}>
+                        <span style={{ marginRight: '0.3em', color: tradeDotColor(t) }}>
+                          {tradeDot(t)}
+                        </span>
+                        {pnlStr}
+                      </td>
+                      <td className="mono">
+                        {t.r_multiple !== null ? `${t.r_multiple.toFixed(2)}R` : '—'}
+                      </td>
+                      <td className="small">{exitReasonLabel(t.exit_reason)}</td>
+                      <td className={`mono ${rPnl >= 0 ? 'pos' : 'neg'}`}>
+                        {rPnl >= 0 ? '+' : '-'}${Math.abs(rPnl).toFixed(2)}
+                      </td>
+                      <td className="mono small muted">
+                        {new Date(t.exit_ts).toLocaleTimeString('en-US', {
+                          timeZone: 'America/New_York',
+                          hour12: false,
+                        })}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
-        )}
-      </div>
+
+          {pages > 1 && (
+            <div className="perf-pagination">
+              <button
+                className="btn btn-sm"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+              >
+                ← Prev
+              </button>
+              <span className="muted small">
+                Page {page} / {pages}
+              </span>
+              <button
+                className="btn btn-sm"
+                disabled={page >= pages}
+                onClick={() => setPage((p) => Math.min(pages, p + 1))}
+              >
+                Next →
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
