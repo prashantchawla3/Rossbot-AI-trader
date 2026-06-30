@@ -268,3 +268,80 @@ export interface ControlResult {
   ok: boolean
   message: string
 }
+
+// ── Performance dashboard ────────────────────────────────────────────────────
+
+export interface TradeLogEntry {
+  trade_id: number
+  symbol: string
+  side: string
+  pattern_type: string
+  entry_price: string
+  exit_price: string
+  shares: number
+  realized_pnl: string
+  r_multiple: number | null
+  exit_reason: string
+  is_disciplined: boolean
+  entry_ts: string
+  exit_ts: string
+  day_pnl_running_total: string
+}
+
+export interface TradesResponse {
+  trades: TradeLogEntry[]
+  total: number
+  page: number
+  page_size: number
+  pages: number
+}
+
+export interface EquityPoint {
+  ts: string
+  cumulative_pnl: string
+  trade_id: number
+}
+
+export interface DailyPnLBar {
+  date: string
+  pnl: string
+}
+
+export interface ScanRejection {
+  symbol: string
+  pillars_failed: string[]
+}
+
+export interface ScanStats {
+  symbols_scanned: number
+  tier_a_count: number
+  tier_b_count: number
+  rejected_from_tier_b: ScanRejection[]
+}
+
+export interface PerformanceSummary {
+  total_trades: number
+  win_count: number
+  loss_count: number
+  win_rate_value: number | null
+  win_rate_str: string
+  avg_r_winners: number | null
+  avg_r_losers: number | null
+  max_drawdown_pct: number
+  give_back_pct_from_peak: number
+  rule_violation_count: number
+  rolling_5_win_rate: number | null
+  rolling_20_win_rate: number | null
+  equity_curve: EquityPoint[]
+  daily_pnl: DailyPnLBar[]
+  realized_pnl: string
+  peak_pnl: string
+  max_daily_loss_limit: string
+  give_back_warn_pct: number
+  give_back_hard_pct: number
+}
+
+export interface PerfWsMessage {
+  type: 'trade_closed' | 'performance_snapshot' | 'pong'
+  payload: unknown
+}

@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { LayoutDashboard, ScanSearch, Zap, Brain, BookOpen } from 'lucide-react'
+import { LayoutDashboard, ScanSearch, Zap, Brain, BookOpen, Activity, BarChart2 } from 'lucide-react'
 import { useDashboard } from '@/hooks/useDashboardState'
 import { Tooltip } from './Tooltip'
 import { KillSwitch } from './KillSwitch'
@@ -13,31 +13,43 @@ const NAV = [
     href: '/command-center',
     label: 'Command',
     icon: LayoutDashboard,
-    hint: 'Command center — bot controls, the risk gauge, and live status.',
+    hint: "Command center — bot controls, the risk gauge, and live status.",
   },
   {
     href: '/watchlist',
     label: 'Watchlist',
     icon: ScanSearch,
-    hint: 'Stocks the bot is watching + the live chart. Tier B passed all 5 pillars; Tier A is the wider pool.',
+    hint: "Stocks the bot is watching + the live chart. Tier B passed all 5 pillars; Tier A is the wider pool.",
   },
   {
     href: '/signals',
     label: 'Signals',
     icon: Zap,
-    hint: 'Open positions (with controls) and the live feed of every buy / sell / skip decision.',
+    hint: "Open positions (with controls) and the live feed of every buy / sell / skip decision.",
   },
   {
     href: '/analysis',
     label: 'AI Analysis',
     icon: Brain,
-    hint: 'Ask the AI to grade any symbol against Ross’s rules, then trade it through the risk gate.',
+    hint: "Ask the AI to grade any symbol against Ross's rules, then trade it through the risk gate.",
   },
   {
     href: '/journal',
     label: 'Journal',
     icon: BookOpen,
-    hint: 'Today’s completed trades, the session summary, and a plain-English rules reference.',
+    hint: "Today's completed trades, the session summary, and a plain-English rules reference.",
+  },
+  {
+    href: '/live',
+    label: 'Live',
+    icon: Activity,
+    hint: "Real-time bot activity — every scan, signal, order and exit as it happens.",
+  },
+  {
+    href: '/performance',
+    label: 'Performance',
+    icon: BarChart2,
+    hint: "Equity curve, win rate (with trade count), drawdown depth, and daily P&L vs risk guardrails.",
   },
 ] as const
 

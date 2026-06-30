@@ -66,6 +66,7 @@ class DemoPosition:
     stop_price: Decimal
     entry_time: datetime
     scaled: bool = False
+    pattern: str = "micro_pullback"
 
 
 @dataclass
@@ -100,6 +101,7 @@ class _GateResult:
     stop_price: Decimal | None = None
     target_price: Decimal | None = None
     reasons: list[str] = field(default_factory=list)
+    pattern: str = "micro_pullback"
 
 
 class DemoEngine:
@@ -135,6 +137,8 @@ class DemoEngine:
         self._last_data_ts: datetime | None = None
         self._running = False
         self._replay_tick = 0
+        # Hook called with the trade dict each time a trade closes (for /ws/performance).
+        self._perf_broadcast: Any | None = None
 
         # Audited session-config overrides (operator console). U11 is relaxed ONLY for
         # these four keys, and EVERY change writes a risk_event audit row + a spec note.
@@ -148,6 +152,10 @@ class DemoEngine:
         """Wire dashboard pause/kill flags (read each loop)."""
         self._paused_getter = paused_getter
         self._halted_getter = halted_getter
+
+    def set_perf_broadcast(self, hook: Any) -> None:
+        """Wire async hook called with trade dict each time a trade closes."""
+        self._perf_broadcast = hook
 
     # ── effective config (session overrides ▸ DemoConfig) ────────────────────────
     # These read the audited session override first, then fall back to the frozen
@@ -473,6 +481,7 @@ class DemoEngine:
                 entry_price=gate.entry_price or limit_price,
                 stop_price=gate.stop_price or (limit_price - Decimal("0.20")),
                 entry_time=now,
+                pattern=gate.pattern or "micro_pullback",
             )
             self.risk.trades_today += 1
             await self.state.add_risk_event(
@@ -721,20 +730,41 @@ class DemoEngine:
         risk_ps = pos.entry_price - pos.stop_price
         per_share = (exit_price - pos.entry_price)
         r_multiple = float(per_share / risk_ps) if risk_ps > 0 else None
-        self.closed_trades.append(
-            {
-                "symbol": pos.symbol,
-                "side": "long",
-                "entry_price": _s(pos.entry_price),
-                "exit_price": _s(exit_price),
-                "shares": int(shares),
-                "pnl": _s(realized),
-                "r_multiple": round(r_multiple, 2) if r_multiple is not None else None,
-                "exit_reason": reason,
-                "entry_ts": pos.entry_time.isoformat(),
-                "exit_ts": now.isoformat(),
-            }
-        )
+        # Exits from P1–P8 rules are disciplined by definition; the only way
+        # is_disciplined is False is if a rule_violation flag were ever set.
+        _DISCIPLINED_EXITS = {
+            "hard_stop", "time_stop", "l2_reversal", "topping_tail",
+            "scale_strength", "first_red_close", "vwap_guard", "lost_popularity",
+            "P5_scale_half", "manual_close",
+        }
+        is_disciplined = reason in _DISCIPLINED_EXITS or not reason.startswith("rule_violation")
+        trade = {
+            "symbol": pos.symbol,
+            "side": "long",
+            "pattern_type": pos.pattern,
+            "entry_price": _s(pos.entry_price),
+            "exit_price": _s(exit_price),
+            "shares": int(shares),
+            "pnl": _s(realized),
+            "r_multiple": round(r_multiple, 2) if r_multiple is not None else None,
+            "exit_reason": reason,
+            "is_disciplined": is_disciplined,
+            "entry_ts": pos.entry_time.isoformat(),
+            "exit_ts": now.isoformat(),
+        }
+        self.closed_trades.append(trade)
+        if self._perf_broadcast is not None:
+            import asyncio as _asyncio
+            try:
+                loop = _asyncio.get_running_loop()
+                loop.create_task(self._perf_broadcast({
+                    "type": "trade_closed",
+                    "payload": trade,
+                }))
+            except RuntimeError:
+                pass  # no running loop (e.g. test context)
+            except Exception:  # noqa: BLE001
+                pass
 
     def journal_today(self) -> list[dict[str, Any]]:
         """Completed trades this session, newest first (GET /api/journal/today)."""
@@ -766,6 +796,167 @@ class DemoEngine:
             "realized_pnl": _s(self.risk.realized_pnl),
             "consecutive_losses": self.risk.consecutive_losses,
             "rules_violated": 0,
+        }
+
+    def performance_trades(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        symbol: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> dict[str, Any]:
+        """Paginated trade log for /api/performance/trades.
+
+        Filters by symbol and/or date range (ISO date strings).  Computes a
+        running day_pnl total across all matching trades (ordered by exit_ts).
+        """
+        trades = [t for t in self.closed_trades if "exit_ts" in t]
+
+        if symbol:
+            sym_upper = symbol.upper()
+            trades = [t for t in trades if t["symbol"].upper() == sym_upper]
+        if date_from:
+            trades = [t for t in trades if t["exit_ts"][:10] >= date_from]
+        if date_to:
+            trades = [t for t in trades if t["exit_ts"][:10] <= date_to]
+
+        # Oldest first for running total, then reverse for display
+        trades_asc = sorted(trades, key=lambda t: t["exit_ts"])
+
+        # Attach running total and sequential trade_id
+        running = Decimal("0")
+        enriched: list[dict[str, Any]] = []
+        for idx, t in enumerate(trades_asc, start=1):
+            running += Decimal(t["pnl"])
+            enriched.append({**t, "trade_id": idx, "day_pnl_running_total": _s(running)})
+
+        total = len(enriched)
+        # Return newest first for display
+        enriched_desc = list(reversed(enriched))
+        start = (page - 1) * page_size
+        page_items = enriched_desc[start : start + page_size]
+        pages = max(1, (total + page_size - 1) // page_size)
+        return {"trades": page_items, "total": total, "page": page, "page_size": page_size, "pages": pages}
+
+    def performance_summary(self) -> dict[str, Any]:
+        """Aggregate performance stats for /api/performance/summary."""
+        trades = sorted(self.closed_trades, key=lambda t: t.get("exit_ts", ""))
+        pnls = [Decimal(t["pnl"]) for t in trades if "pnl" in t]
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p < 0]
+        total = len(pnls)
+        win_count = len(wins)
+        loss_count = len(losses)
+        win_rate = win_count / total if total else None
+
+        # R-multiples
+        r_vals = [t["r_multiple"] for t in trades if t.get("r_multiple") is not None]
+        r_winners = [r for r, t in zip(r_vals, trades) if Decimal(t["pnl"]) > 0 and t.get("r_multiple") is not None]
+        r_losers = [r for r, t in zip(r_vals, trades) if Decimal(t["pnl"]) <= 0 and t.get("r_multiple") is not None]
+        avg_r_winners = round(sum(r_winners) / len(r_winners), 2) if r_winners else None
+        avg_r_losers = round(sum(r_losers) / len(r_losers), 2) if r_losers else None
+
+        # Equity curve + max drawdown
+        equity_curve: list[dict[str, Any]] = []
+        running = Decimal("0")
+        peak = Decimal("0")
+        trough_after_peak = Decimal("0")
+        max_dd = Decimal("0")
+        for idx, t in enumerate(trades, start=1):
+            running += Decimal(t["pnl"])
+            if running > peak:
+                peak = running
+                trough_after_peak = running
+            elif running < trough_after_peak:
+                trough_after_peak = running
+                if peak > 0:
+                    dd = (peak - trough_after_peak) / peak
+                    if dd > max_dd:
+                        max_dd = dd
+            equity_curve.append({
+                "ts": t.get("exit_ts", ""),
+                "cumulative_pnl": _s(running),
+                "trade_id": idx,
+            })
+
+        # Give-back from current peak
+        give_back_pct = float((peak - self.risk.realized_pnl) / peak) if peak > 0 else 0.0
+
+        # Rolling win rates (last 5 and last 20 trades)
+        def _rolling_wr(n: int) -> float | None:
+            last_n = pnls[-n:] if len(pnls) >= n else pnls
+            if not last_n:
+                return None
+            return round(sum(1 for p in last_n if p > 0) / len(last_n), 4)
+
+        # Daily P&L (group by exit date)
+        daily: dict[str, Decimal] = {}
+        for t in trades:
+            date = t.get("exit_ts", "")[:10]
+            if date:
+                daily[date] = daily.get(date, Decimal("0")) + Decimal(t["pnl"])
+        daily_pnl = [{"date": d, "pnl": _s(v)} for d, v in sorted(daily.items())]
+
+        rule_violations = sum(1 for t in trades if not t.get("is_disciplined", True))
+
+        # Win rate display string ("60% (3/5 trades)")
+        if total:
+            wr_pct = round((win_count / total) * 100)
+            win_rate_str = f"{wr_pct}% ({win_count}/{total} trade{'s' if total != 1 else ''})"
+        else:
+            win_rate_str = "—"
+
+        return {
+            "total_trades": total,
+            "win_count": win_count,
+            "loss_count": loss_count,
+            "win_rate_value": round(win_rate, 4) if win_rate is not None else None,
+            "win_rate_str": win_rate_str,
+            "avg_r_winners": avg_r_winners,
+            "avg_r_losers": avg_r_losers,
+            "max_drawdown_pct": float(max_dd),
+            "give_back_pct_from_peak": give_back_pct,
+            "rule_violation_count": rule_violations,
+            "rolling_5_win_rate": _rolling_wr(5),
+            "rolling_20_win_rate": _rolling_wr(20),
+            "equity_curve": equity_curve,
+            "daily_pnl": daily_pnl,
+            "realized_pnl": _s(self.risk.realized_pnl),
+            "peak_pnl": _s(self.risk.peak_pnl),
+            # These come from the effective config; the frontend draws reference lines.
+            "max_daily_loss_limit": _s(self.effective_max_daily_loss),
+            "give_back_warn_pct": 0.25,
+            "give_back_hard_pct": 0.50,
+        }
+
+    def scan_stats(self) -> dict[str, Any]:
+        """Scan universe stats for the performance empty-state screen."""
+        from core.demo.universe import STARTER_UNIVERSE
+        tier_a = self._last_scan_tier_a
+        tier_b = self._last_scan_tier_b
+
+        # Compute rejection reasons: Tier-A entries that failed one or more pillars
+        rejections: list[dict[str, Any]] = []
+        pillar_labels = {
+            "P1_price": "Price range ($2–$20)",
+            "P2_float": "Float ≤ 20M shares",
+            "P3_rvol": "RVOL ≥ 5×",
+            "P4_roc": "ROC ≥ 10%",
+            "P5_catalyst": "Verified catalyst",
+        }
+        for entry in tier_a:
+            flags: dict[str, bool] = entry.get("pillar_flags", {})
+            failed = [pillar_labels.get(k, k) for k, v in flags.items() if not v]
+            if failed:
+                rejections.append({"symbol": entry["symbol"], "pillars_failed": failed})
+
+        return {
+            "symbols_scanned": len(STARTER_UNIVERSE),
+            "tier_a_count": len(tier_a),
+            "tier_b_count": len(tier_b),
+            "rejected_from_tier_b": rejections,
         }
 
     # ── operator console: manual controls (spec §11 / dashboard) ─────────────────
@@ -937,6 +1128,7 @@ class DemoEngine:
                 entry_price=limit,
                 stop_price=(limit - Decimal("0.20")),
                 entry_time=now,
+                pattern="manual",
             )
             self.risk.trades_today += 1
         await self.state.add_signal(

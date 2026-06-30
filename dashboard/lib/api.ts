@@ -14,6 +14,9 @@ import type {
   SessionSummary,
   AccountState,
   SymbolNews,
+  PerformanceSummary,
+  TradesResponse,
+  ScanStats,
 } from './types'
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
@@ -96,6 +99,27 @@ export const api = {
     post<{ ok: boolean; message?: string }>(`/api/positions/${symbol}/scale-out`),
   moveStop: (symbol: string, stop_price: number) =>
     post<{ ok: boolean; stop_price?: string }>(`/api/positions/${symbol}/stop`, { stop_price }),
+
+  // ── performance dashboard ────────────────────────────────────────────────
+  getPerformanceSummary: () =>
+    apiFetch<PerformanceSummary>('/api/performance/summary'),
+  getPerformanceTrades: (params?: {
+    page?: number
+    page_size?: number
+    symbol?: string
+    date_from?: string
+    date_to?: string
+  }) => {
+    const qs = new URLSearchParams()
+    if (params?.page) qs.set('page', String(params.page))
+    if (params?.page_size) qs.set('page_size', String(params.page_size))
+    if (params?.symbol) qs.set('symbol', params.symbol)
+    if (params?.date_from) qs.set('date_from', params.date_from)
+    if (params?.date_to) qs.set('date_to', params.date_to)
+    const suffix = qs.toString() ? `?${qs.toString()}` : ''
+    return apiFetch<TradesResponse>(`/api/performance/trades${suffix}`)
+  },
+  getScanStats: () => apiFetch<ScanStats>('/api/performance/scan-stats'),
 
   // ── manual trading (through the risk gate) ────────────────────────────────
   tradeManual: (body: { symbol: string; entry: number; stop: number; shares: number }) =>

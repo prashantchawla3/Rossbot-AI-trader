@@ -47,7 +47,7 @@ if "pytest" not in _sys.modules:
     except Exception:  # noqa: BLE001 — dotenv is optional
         pass
 
-from api.routers import controls, dashboard, health, news, operator
+from api.routers import controls, dashboard, health, news, operator, performance
 from api.services.alert_service import AlertService, AlertSeverity
 from api.services.health_service import HealthService, _HEALTH_POLL_S
 from api.services.state_service import StateService
@@ -65,6 +65,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
 
     ws_manager = ConnectionManager()
+    perf_ws_manager = ConnectionManager()
     state_svc = StateService()
     alert_svc = AlertService()
     health_svc = HealthService()
@@ -101,6 +102,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     news_stream.add_news_callback(_on_verified_catalyst)
 
     app.state.ws_manager = ws_manager
+    app.state.perf_ws_manager = perf_ws_manager
     app.state.svc = state_svc
     app.state.alert_svc = alert_svc
     app.state.health_svc = health_svc
@@ -119,6 +121,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from core.demo.wiring import start_demo, stop_demo
 
     await start_demo(app)
+
+    # Wire the performance WebSocket manager to the engine so it broadcasts trade_closed events.
+    demo_engine = getattr(app.state, "demo_engine", None)
+    if demo_engine is not None:
+        demo_engine.set_perf_broadcast(perf_ws_manager.broadcast_json)
 
     yield
 
@@ -191,12 +198,44 @@ app.include_router(operator.router)
 app.include_router(controls.router)
 app.include_router(health.router)
 app.include_router(news.router)
+app.include_router(performance.router)
 
 
 @app.get("/health")
 async def health_liveness() -> dict[str, Any]:
     """Simple liveness probe."""
     return {"status": "ok", "service": "rossbot", "phase": 5}
+
+
+@app.websocket("/ws/performance")
+async def ws_performance(websocket: WebSocket) -> None:
+    """WebSocket endpoint — streams trade_closed events to performance dashboard clients.
+
+    On connect: sends the full current performance summary immediately.
+    Ongoing: each completed trade broadcasts {"type":"trade_closed","payload":{...}}.
+    """
+    perf_ws_manager: ConnectionManager = websocket.app.state.perf_ws_manager
+    await perf_ws_manager.connect(websocket)
+    try:
+        eng = getattr(websocket.app.state, "demo_engine", None)
+        if eng is not None:
+            await websocket.send_text(
+                json.dumps({"type": "performance_snapshot", "payload": eng.performance_summary()}, default=str)
+            )
+    except Exception:  # noqa: BLE001
+        perf_ws_manager.disconnect(websocket)
+        return
+    try:
+        while True:
+            text = await websocket.receive_text()
+            if text.strip() == "ping":
+                await websocket.send_text('{"type":"pong","payload":{}}')
+    except WebSocketDisconnect:
+        pass
+    except Exception:  # noqa: BLE001
+        log.debug("ws_performance_closed_unexpectedly")
+    finally:
+        perf_ws_manager.disconnect(websocket)
 
 
 @app.websocket("/ws/live")
